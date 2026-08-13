@@ -87,6 +87,22 @@ class ULATest extends AnyFlatSpec with ChiselScalatestTester {
       runCase(dut, "SLTU", SLTU, 1, 2, 1)
       runCase(dut, "SLTU", SLTU, -1, 1, 0) // 0xFFFFFFFF unsigned > 1
 
+      // MUL (multiplicação baixa)
+      runCase(dut, "MUL", MUL, 2, 2, 4)
+      runCase(dut, "MUL", MUL, 0x00010000L, 0x00010000L, 0)
+
+      // MULH (multiplicação alta com sinal)
+      runCase(dut, "MULH", MULH, 0x00010000L, 0x00010000L, 1)
+      runCase(dut, "MULH", MULH, -2, 2, 0XffffffffL)
+
+      // MULHU (mulitplicação alta sem sinal)
+      runCase(dut, "MULHU", MULHU, 0x00010000L, 0x00010000L, 1)
+      runCase(dut, "MULHU", MULHU, 0xffffffffL, 0xffffffffL, 0xfffffffeL)
+
+      // MULHSU
+      runCase(dut, "MULHSU", MULHSU, -2, 2, 0xffffffffL)
+      runCase(dut, "MULHSU", MULHSU, 0x80000000L, 2, 0xffffffffL)
+
       println("\n==== TODOS OS TESTES DA ULA PASSARAM ====")
     }
   }
