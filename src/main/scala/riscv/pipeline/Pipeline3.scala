@@ -39,6 +39,7 @@ class Pipeline3(
     val writebackRd = Output(UInt(5.W))
     val writebackEnable = Output(Bool())
     val illegal = Output(Bool())
+    val stalled = Output(Bool())
   })
 
   import RV32I._
@@ -62,6 +63,9 @@ class Pipeline3(
   val ifIdPc = RegInit(0.U(32.W))
   val ifIdInstr = RegInit(nop)
   val idEx = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
+
+  val stallPipeline = WireDefault(false.B)
+  val flushPipeline = WireDefault(false.B)
 
   val exOperandA = WireDefault(idEx.rs1Value)
   val exOperandB = WireDefault(idEx.rs2Value)
@@ -97,7 +101,12 @@ class Pipeline3(
   val controlRedirect = idEx.valid && !idEx.signals.illegal &&
     (idEx.signals.jump || (idEx.signals.branchType =/= BranchType.NONE && branchTaken))
   val redirectTarget = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
-  val pcNext = Mux(controlRedirect, redirectTarget, pcReg + 4.U)
+  val pcNext = WireDefault(pcReg + 4.U)
+  when(stallPipeline) {
+    pcNext := pcReg  // Mantém PC durante stall
+  }.elsewhen(controlRedirect) {
+    pcNext := redirectTarget
+  }
 
   instrMem.io.address := pcReg
 
@@ -130,6 +139,25 @@ class Pipeline3(
 
   val idRs1 = ifIdInstr(19, 15)
   val idRs2 = ifIdInstr(24, 20)
+
+  val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
+                      (idRs2 === idEx.rd && idRs2 =/= 0.U)
+  val isLoadInEx = idEx.valid &&
+                   idEx.signals.writebackSel === WritebackSel.MEM &&
+                   !idEx.signals.memWrite &&
+                   idEx.signals.regWrite &&
+                   idEx.signals.branchType === BranchType.NONE &&
+                   !idEx.signals.jump &&
+                   !idEx.signals.jalr &&
+                   !idEx.signals.illegal
+  val loadUseHazard = isLoadInEx && currentUsesRd
+
+  val hazardDetected = loadUseHazard
+
+  stallPipeline := hazardDetected
+  flushPipeline := controlRedirect
+
+
   val forwardedRs1 = Mux(
     writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
     writebackData,
@@ -143,21 +171,37 @@ class Pipeline3(
   val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
   pcReg := pcNext
-  ifIdPc := pcReg
-  ifIdInstr := Mux(controlRedirect, nop, instrMem.io.readData)
+  when(stallPipeline) {
+    // Mantém valores (stall)
+  }.elsewhen(flushPipeline) {
+    // Flush: insere NOP
+    ifIdPc := pcReg
+    ifIdInstr := nop
+  }.otherwise {
+    // Atualização normal
+    ifIdPc := pcReg
+    ifIdInstr := Mux(controlRedirect, nop, instrMem.io.readData)
+  }
 
-  idEx.valid := !controlRedirect
-  idEx.pc := ifIdPc
-  idEx.instr := ifIdInstr
-  idEx.rs1 := idRs1
-  idEx.rs2 := idRs2
-  idEx.rd := ifIdInstr(11, 7)
-  idEx.rs1Value := forwardedRs1
-  idEx.rs2Value := forwardedRs2
-  idEx.imm := immGen.io.imm
-  idEx.memAddress := decodedMemAddress
-  idEx.memWriteData := forwardedRs2
-  idEx.signals := controller.io.signals
+  when(stallPipeline) {
+    // Mantém valores (stall)
+  }.elsewhen(flushPipeline || controlRedirect) {
+    // Flush: zera o estágio
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
+  }.otherwise {
+    idEx.valid := !controlRedirect
+    idEx.pc := ifIdPc
+    idEx.instr := ifIdInstr
+    idEx.rs1 := idRs1
+    idEx.rs2 := idRs2
+    idEx.rd := ifIdInstr(11, 7)
+    idEx.rs1Value := forwardedRs1
+    idEx.rs2Value := forwardedRs2
+    idEx.imm := immGen.io.imm
+    idEx.memAddress := decodedMemAddress
+    idEx.memWriteData := forwardedRs2
+    idEx.signals := controller.io.signals
+  }
 
   when(controlRedirect) {
     idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
@@ -170,4 +214,5 @@ class Pipeline3(
   io.writebackRd := idEx.rd
   io.writebackEnable := writebackEnable
   io.illegal := idEx.valid && idEx.signals.illegal
+  io.stalled := stallPipeline
 }
