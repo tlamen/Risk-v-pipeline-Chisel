@@ -13,6 +13,7 @@ object RV32I {
     val BRANCH = "b1100011".U(7.W)
     val JALR = "b1100111".U(7.W)
     val JAL = "b1101111".U(7.W)
+    val ATOMIC = "B0101111".U(7.W)
   }
 
   object BranchType {
@@ -47,5 +48,32 @@ object RV32I {
     val MEM = 1.U(2.W)
     val PC4 = 2.U(2.W)
     val IMM = 3.U(2.W)
+  }
+
+  object AMOOp {
+    val SWAP  = 0.U(4.W)
+    val ADD   = 1.U(4.W)
+    val AND   = 2.U(4.W)
+    val OR    = 3.U(4.W)
+    val XOR   = 4.U(4.W)
+    val MAX   = 5.U(4.W)
+    val MIN   = 6.U(4.W)
+    val MAXU  = 7.U(4.W)
+    val MINU  = 8.U(4.W)
+  }
+
+  // Funct7 para AMOs (5 bits superiores)
+  object AMOFunct5 {
+    val LR     = "b00010".U(5.W)   // 0x02
+    val SC     = "b00011".U(5.W)   // 0x03
+    val SWAP   = "b00001".U(5.W)   // 0x01
+    val ADD    = "b00000".U(5.W)   // 0x00
+    val AND    = "b01100".U(5.W)   // 0x0C
+    val OR     = "b01000".U(5.W)   // 0x08
+    val XOR    = "b00100".U(5.W)   // 0x04
+    val MAX    = "b10100".U(5.W)   // 0x14
+    val MIN    = "b10000".U(5.W)   // 0x10
+    val MAXU   = "b10110".U(5.W)   // 0x16
+    val MINU   = "b10010".U(5.W)   // 0x12
   }
 }

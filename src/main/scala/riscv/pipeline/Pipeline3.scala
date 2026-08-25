@@ -19,6 +19,13 @@ class DecodeExecuteBundle extends Bundle {
   val signals = new ControlSignals
 }
 
+val AMO_OP = new Bundle {
+    val amoOp = UInt(4.W)  // Código da operação AMO
+    val isLR = Bool()
+    val isSC = Bool()
+    val isAMO = Bool()
+}
+
 /** Pipeline RV32I educacional de 3 estagios, inspirado no Wildcat do livro: IF,
   * ID/RF/address-prep e EX/MEM/WB.
   *
@@ -45,6 +52,56 @@ class Pipeline3(
   import RV32I._
 
   val nop = "h00000013".U(32.W) // addi x0, x0, 0
+
+  // Mecanismo de reserva para LR/SC
+  val reservationAddr = RegInit(0.U(32.W))
+  val reservationValid = RegInit(false.B)
+
+  // Sinais para LR/SC
+  val isLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
+  val isSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
+  val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+
+  // Quando uma LR é executada
+  when(isLR) {
+      reservationAddr := idEx.memAddress
+      reservationValid := true.B
+  }
+
+  // Quando uma SC é executada
+  val scSuccess = WireDefault(false.B)
+  when(isSC) {
+      scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
+      when(scSuccess) {
+          // Escreve na memória
+          dataMem.io.writeEnable := true.B
+          dataMem.io.address := idEx.memAddress
+          dataMem.io.writeData := idEx.memWriteData
+          // Invalida a reserva
+          reservationValid := false.B
+      } .otherwise {
+          // Não escreve, invalida a reserva
+          reservationValid := false.B
+      }
+  }
+
+  // Quando uma AMO é executada
+  when(isAMO) {
+      // A leitura e escrita são atômicas (garantidas pelo estágio MEM)
+      // O valor antigo é lido e o novo é escrito
+      // Invalida a reserva (qualquer AMO invalida)
+      reservationValid := false.B
+  }
+
+  // Qualquer escrita na memória invalida a reserva (simplificação)
+  when(dataMem.io.writeEnable && (idEx.memAddress === reservationAddr)) {
+      reservationValid := false.B
+  }
+
+  // Interrupções invalidam a reserva
+  when(io.illegal || idEx.signals.illegal) {
+      reservationValid := false.B
+  }
 
   val instrMem = Module(
     new InstructionMemory(
