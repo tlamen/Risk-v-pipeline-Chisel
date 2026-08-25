@@ -47,44 +47,56 @@ class Controller extends Module {
     is(Opcode.OP) {
       illegal := false.B
       io.signals.regWrite := true.B
-      switch(io.funct3) {
-        is("b000".U) {
-          when(io.funct7 === "b0000000".U) { io.signals.aluOp := ALUOp.ADD }
-            .elsewhen(io.funct7 === "b0100000".U) {
-              io.signals.aluOp := ALUOp.SUB
-            }
-            .otherwise { illegal := true.B }
+
+      when(io.funct7 === "b0000001".U) {
+        // --- EXTENSÃO M: MULTIPLICAÇÃO ---
+        // funct7 = 0000001, funct3 define a operação
+        switch(io.funct3) {
+          is("b000".U) { io.signals.aluOp := ALUOp.MUL }      // MUL
+          is("b001".U) { io.signals.aluOp := ALUOp.MULH }     // MULH
+          is("b010".U) { io.signals.aluOp := ALUOp.MULHSU }   // MULHSU
+          is("b011".U) { io.signals.aluOp := ALUOp.MULHU }    // MULHU
         }
-        is("b001".U) {
-          io.signals.aluOp := ALUOp.SLL
-          illegal := io.funct7 =/= "b0000000".U
-        }
-        is("b010".U) {
-          io.signals.aluOp := ALUOp.SLT
-          illegal := io.funct7 =/= "b0000000".U
-        }
-        is("b011".U) {
-          io.signals.aluOp := ALUOp.SLTU
-          illegal := io.funct7 =/= "b0000000".U
-        }
-        is("b100".U) {
-          io.signals.aluOp := ALUOp.XOR
-          illegal := io.funct7 =/= "b0000000".U
-        }
-        is("b101".U) {
-          when(io.funct7 === "b0000000".U) { io.signals.aluOp := ALUOp.SRL }
-            .elsewhen(io.funct7 === "b0100000".U) {
-              io.signals.aluOp := ALUOp.SRA
-            }
-            .otherwise { illegal := true.B }
-        }
-        is("b110".U) {
-          io.signals.aluOp := ALUOp.OR
-          illegal := io.funct7 =/= "b0000000".U
-        }
-        is("b111".U) {
-          io.signals.aluOp := ALUOp.AND
-          illegal := io.funct7 =/= "b0000000".U
+      } .otherwise {
+        switch(io.funct3) {
+          is("b000".U) {
+            when(io.funct7 === "b0000000".U) { io.signals.aluOp := ALUOp.ADD }
+              .elsewhen(io.funct7 === "b0100000".U) {
+                io.signals.aluOp := ALUOp.SUB
+              }
+              .otherwise { illegal := true.B }
+          }
+          is("b001".U) {
+            io.signals.aluOp := ALUOp.SLL
+            illegal := io.funct7 =/= "b0000000".U
+          }
+          is("b010".U) {
+            io.signals.aluOp := ALUOp.SLT
+            illegal := io.funct7 =/= "b0000000".U
+          }
+          is("b011".U) {
+            io.signals.aluOp := ALUOp.SLTU
+            illegal := io.funct7 =/= "b0000000".U
+          }
+          is("b100".U) {
+            io.signals.aluOp := ALUOp.XOR
+            illegal := io.funct7 =/= "b0000000".U
+          }
+          is("b101".U) {
+            when(io.funct7 === "b0000000".U) { io.signals.aluOp := ALUOp.SRL }
+              .elsewhen(io.funct7 === "b0100000".U) {
+                io.signals.aluOp := ALUOp.SRA
+              }
+              .otherwise { illegal := true.B }
+          }
+          is("b110".U) {
+            io.signals.aluOp := ALUOp.OR
+            illegal := io.funct7 =/= "b0000000".U
+          }
+          is("b111".U) {
+            io.signals.aluOp := ALUOp.AND
+            illegal := io.funct7 =/= "b0000000".U
+          }
         }
       }
     }
