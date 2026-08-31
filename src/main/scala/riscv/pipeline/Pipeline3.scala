@@ -19,13 +19,6 @@ class DecodeExecuteBundle extends Bundle {
   val signals = new ControlSignals
 }
 
-val AMO_OP = new Bundle {
-    val amoOp = UInt(4.W)  // Código da operação AMO
-    val isLR = Bool()
-    val isSC = Bool()
-    val isAMO = Bool()
-}
-
 /** Pipeline RV32I educacional de 3 estagios, inspirado no Wildcat do livro: IF,
   * ID/RF/address-prep e EX/MEM/WB.
   *
@@ -56,6 +49,27 @@ class Pipeline3(
   // Mecanismo de reserva para LR/SC
   val reservationAddr = RegInit(0.U(32.W))
   val reservationValid = RegInit(false.B)
+
+  val instrMem = Module(
+    new InstructionMemory(
+      depthWords = memoryWords,
+      initialData = initialProgram,
+      programFile = programFile
+    )
+  )
+  val dataMem = Module(new DataMemory(depthWords = memoryWords))
+  val regFile = Module(new RegisterFile)
+  val immGen = Module(new ImmGen)
+  val controller = Module(new Controller)
+  val ula = Module(new ULA)
+
+  val pcReg = RegInit(0.U(32.W))
+  val ifIdPc = RegInit(0.U(32.W))
+  val ifIdInstr = RegInit(nop)
+  val idEx = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
+
+  val stallPipeline = WireDefault(false.B)
+  val flushPipeline = WireDefault(false.B)
 
   // Sinais para LR/SC
   val isLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
@@ -103,26 +117,6 @@ class Pipeline3(
       reservationValid := false.B
   }
 
-  val instrMem = Module(
-    new InstructionMemory(
-      depthWords = memoryWords,
-      initialData = initialProgram,
-      programFile = programFile
-    )
-  )
-  val dataMem = Module(new DataMemory(depthWords = memoryWords))
-  val regFile = Module(new RegisterFile)
-  val immGen = Module(new ImmGen)
-  val controller = Module(new Controller)
-  val ula = Module(new ULA)
-
-  val pcReg = RegInit(0.U(32.W))
-  val ifIdPc = RegInit(0.U(32.W))
-  val ifIdInstr = RegInit(nop)
-  val idEx = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
-
-  val stallPipeline = WireDefault(false.B)
-  val flushPipeline = WireDefault(false.B)
 
   val exOperandA = WireDefault(idEx.rs1Value)
   val exOperandB = WireDefault(idEx.rs2Value)
@@ -167,6 +161,26 @@ class Pipeline3(
 
   instrMem.io.address := pcReg
 
+  // Sinais para controle da memória (com suporte à extensão A)
+  val memRead = WireDefault(
+    idEx.valid && !idEx.signals.illegal && 
+    (idEx.signals.writebackSel === WritebackSel.MEM) &&
+    !idEx.signals.memWrite
+  )
+  val memWrite = WireDefault(
+    idEx.valid && !idEx.signals.illegal && idEx.signals.memWrite
+  )
+
+  // Para LR.W: sempre lê da memória
+  when(isLR) {
+    memRead := true.B
+  }
+
+  // Para SC.W e AMOs: escreve na memória
+  when(isSC || isAMO) {
+    memWrite := true.B
+  }
+
   dataMem.io.address := idEx.memAddress
   dataMem.io.writeData := idEx.memWriteData
   dataMem.io.writeEnable := idEx.valid && !idEx.signals.illegal && idEx.signals.memWrite
@@ -174,10 +188,53 @@ class Pipeline3(
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
   val writebackData = WireDefault(ula.io.result)
-  switch(idEx.signals.writebackSel) {
-    is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
-    is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
-    is(WritebackSel.IMM) { writebackData := idEx.imm }
+  when(idEx.signals.writebackSel === WritebackSel.MEM && !isLR && !isAMO) {
+    writebackData := dataMem.io.readData
+  }
+
+  // LR.W: valor lido da memória
+  when(isLR) {
+    writebackData := dataMem.io.readData
+  }
+
+  // SC.W: resultado é 0 (sucesso) ou 1 (falha)
+  when(isSC) {
+    writebackData := Mux(scSuccess, 0.U, 1.U)
+  }
+
+  // AMOs: valor lido da memória (valor antigo)
+  when(isAMO) {
+    writebackData := dataMem.io.readData
+  }
+
+  when(idEx.signals.writebackSel === WritebackSel.PC4) {
+    writebackData := idEx.pc + 4.U
+  }
+  when(idEx.signals.writebackSel === WritebackSel.IMM) {
+    writebackData := idEx.imm
+  }
+
+  // Endereço alinhado para LR/SC/AMO (deve ser word-aligned, bits 1:0 = 0)
+  val addressMisaligned = WireDefault(false.B)
+  when(idEx.valid && !idEx.signals.illegal && (isLR || isSC || isAMO)) {
+    addressMisaligned := idEx.memAddress(1, 0) =/= 0.U
+  }
+
+  // Page Faults (simplificado: se a memória não tiver o endereço)
+  val addressOutOfRange = WireDefault(false.B)
+  when(idEx.valid && !idEx.signals.illegal && (isLR || isSC || isAMO)) {
+    addressOutOfRange := idEx.memAddress >= memoryWords.U * 4.U
+  }
+
+  // Acessos a endereços não alinhados geram exceção
+  when(addressMisaligned) {
+    // Força a instrução a ser ilegal (gera exceção)
+    idEx.signals.illegal := true.B
+  }
+
+  // Acessos fora do intervalo da memória (simula page fault)
+  when(addressOutOfRange) {
+    idEx.signals.illegal := true.B
   }
 
   val writebackEnable =

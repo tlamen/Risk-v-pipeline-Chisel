@@ -13,7 +13,7 @@ object RV32I {
     val BRANCH = "b1100011".U(7.W)
     val JALR = "b1100111".U(7.W)
     val JAL = "b1101111".U(7.W)
-    val ATOMIC = "B0101111".U(7.W)
+    val ATOMIC = "b0101111".U(7.W)
   }
 
   object BranchType {

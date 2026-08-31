@@ -262,7 +262,6 @@ class Controller extends Module {
           io.signals.isLR := true.B
           io.signals.regWrite := true.B
           io.signals.writebackSel := WritebackSel.MEM
-          io.signals.memRead := true.B
           io.signals.memSize := MemorySize.WORD
           io.signals.memUnsigned := false.B
           io.signals.aluOp := ALUOp.ADD
@@ -302,7 +301,6 @@ class Controller extends Module {
       when(io.signals.isAMO) {
         io.signals.regWrite := true.B
         io.signals.writebackSel := WritebackSel.MEM  // escreve o valor antigo no rd
-        io.signals.memRead := true.B
         io.signals.memWrite := true.B
         io.signals.memSize := MemorySize.WORD
         io.signals.memUnsigned := false.B
