@@ -16,6 +16,12 @@ class ControlSignals extends Bundle {
   val jump = Bool()
   val jalr = Bool()
   val illegal = Bool()
+  val isLR = Bool()
+  val isSC = Bool()
+  val isAMO = Bool()
+  val amoOp = UInt(4.W)
+  val amoAq = Bool()
+  val amoRl = Bool()
 }
 
 class Controller extends Module {
@@ -40,8 +46,18 @@ class Controller extends Module {
   io.signals.writebackSel := WritebackSel.ALU
   io.signals.jump := false.B
   io.signals.jalr := false.B
+  io.signals.isLR := false.B
+  io.signals.isSC := false.B
+  io.signals.isAMO := false.B
+  io.signals.amoOp := AMOOp.ADD
+  io.signals.amoAq := false.B
+  io.signals.amoRl := false.B
   val illegal = WireDefault(true.B)
   io.signals.illegal := illegal
+
+  val amoFunct5 = io.funct7(6, 2)
+  val amoAq = io.funct7(1)  // bit 1 = acquire
+  val amoRl = io.funct7(0)  // bit 0 = release
 
   switch(io.opcode) {
     is(Opcode.OP) {
@@ -240,6 +256,76 @@ class Controller extends Module {
       illegal := io.funct3 =/= "b000".U
     }
 
+    is(Opcode.ATOMIC) {
+      switch(amoFunct5) {
+        is("b00010".U) {  // funct7 = 0b00010 (0x02)
+          io.signals.isLR := true.B
+          io.signals.regWrite := true.B
+          io.signals.writebackSel := WritebackSel.MEM
+          io.signals.memSize := MemorySize.WORD
+          io.signals.memUnsigned := false.B
+          io.signals.aluOp := ALUOp.ADD
+          io.signals.operandASel := OperandASel.RS1
+          io.signals.operandBSel := OperandBSel.IMM
+          // aq/rl não são usados em LR (mas podem ser armazenados)
+          io.signals.amoAq := amoAq
+          io.signals.amoRl := amoRl
+        }
+        
+        // --- Store-Conditional (SC.W) ---
+        is("b00011".U) {  // funct7 = 0b00011 (0x03)
+          io.signals.isSC := true.B
+          io.signals.regWrite := true.B
+          io.signals.writebackSel := WritebackSel.ALU  // resultado: 0 (sucesso) ou 1 (falha)
+          io.signals.memWrite := true.B
+          io.signals.memSize := MemorySize.WORD
+          io.signals.aluOp := ALUOp.ADD
+          io.signals.operandASel := OperandASel.RS1
+          io.signals.operandBSel := OperandBSel.IMM
+          io.signals.amoAq := amoAq
+          io.signals.amoRl := amoRl
+        }
+        
+        // --- AMOs (Atomic Memory Operations) ---
+        is("b00001".U) { io.signals.amoOp := AMOOp.SWAP }  // 0x01
+        is("b00000".U) { io.signals.amoOp := AMOOp.ADD }   // 0x00
+        is("b01100".U) { io.signals.amoOp := AMOOp.AND }   // 0x0C
+        is("b01000".U) { io.signals.amoOp := AMOOp.OR }    // 0x08
+        is("b00100".U) { io.signals.amoOp := AMOOp.XOR }   // 0x04
+        is("b10100".U) { io.signals.amoOp := AMOOp.MAX }   // 0x14
+        is("b10000".U) { io.signals.amoOp := AMOOp.MIN }   // 0x10
+        is("b10110".U) { io.signals.amoOp := AMOOp.MAXU }  // 0x16
+        is("b10010".U) { io.signals.amoOp := AMOOp.MINU }  // 0x12
+      }
+
+      when(io.signals.isAMO) {
+        io.signals.regWrite := true.B
+        io.signals.writebackSel := WritebackSel.MEM  // escreve o valor antigo no rd
+        io.signals.memWrite := true.B
+        io.signals.memSize := MemorySize.WORD
+        io.signals.memUnsigned := false.B
+        io.signals.operandASel := OperandASel.RS1
+        io.signals.operandBSel := OperandBSel.RS2
+        io.signals.amoAq := amoAq
+        io.signals.amoRl := amoRl
+        
+        // Define o ALUOp baseado na operação AMO
+        switch(io.signals.amoOp) {
+          is(AMOOp.SWAP) {
+            // SWAP não usa a ULA
+            io.signals.aluOp := ALUOp.ADD  // valor dummy
+          }
+          is(AMOOp.ADD)  { io.signals.aluOp := ALUOp.ADD }
+          is(AMOOp.AND)  { io.signals.aluOp := ALUOp.AND }
+          is(AMOOp.OR)   { io.signals.aluOp := ALUOp.OR }
+          is(AMOOp.XOR)  { io.signals.aluOp := ALUOp.XOR }
+          is(AMOOp.MAX)  { io.signals.aluOp := ALUOp.SLT }
+          is(AMOOp.MIN)  { io.signals.aluOp := ALUOp.SLT }
+          is(AMOOp.MAXU) { io.signals.aluOp := ALUOp.SLTU }
+          is(AMOOp.MINU) { io.signals.aluOp := ALUOp.SLTU }
+        }
+      }
+    }
   }
 
   when(illegal) {
@@ -247,5 +333,8 @@ class Controller extends Module {
     io.signals.memWrite := false.B
     io.signals.jump := false.B
     io.signals.branchType := BranchType.NONE
+    io.signals.isLR := false.B
+    io.signals.isSC := false.B
+    io.signals.isAMO := false.B
   }
 }
