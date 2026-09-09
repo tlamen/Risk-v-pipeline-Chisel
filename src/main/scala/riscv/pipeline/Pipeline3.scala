@@ -76,6 +76,36 @@ class Pipeline3(
   val isSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
 
+  // Interrupção do Timer (TODO)
+  val timer_interrupt = WireDefault(false.B)
+
+  // CLINT
+  val clint = Module(new CLINT)
+
+  // Conectar CLINT ao pipeline
+  clint.io.mstatus := ???  // CSR mstatus
+  clint.io.mepc    := ???  // CSR mepc
+  clint.io.mcause  := ???  // CSR mcause
+  clint.io.mtvec   := ???  // CSR mtvec
+  clint.io.mie     := ???  // CSR mie
+  clint.io.pc      := pcReg
+  clint.io.instr   := ifIdInstr  // Instrução no estágio ID
+  clint.io.valid   := !stallPipeline && !flushPipeline
+  clint.io.interrupt_flag := Mux(timer_interrupt, InterruptCode.Timer0, InterruptCode.None)
+
+  // Sinais de trap do CLINT
+  val trap_assert  = clint.io.trap_assert
+  val trap_address = clint.io.trap_address
+  val trap_cause   = clint.io.trap_cause
+
+  // Controle de CSR via CLINT
+  val csr_write_enable = clint.io.direct_write_enable
+  val csr_write_data   = MuxLookup(csr_write_enable, 0.U(32.W))(
+    Seq(
+      // Mapear endereços de CSR para dados de escrita
+    )
+  )
+
   // Quando uma LR é executada
   when(isLR) {
       reservationAddr := idEx.memAddress
