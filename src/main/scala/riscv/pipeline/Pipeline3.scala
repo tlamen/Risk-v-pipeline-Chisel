@@ -2,7 +2,8 @@ package riscv.pipeline
 
 import chisel3._
 import chisel3.util._
-import riscv.elementosbasicos._
+import riscv.elementosbasicos._ 
+import riscv._
 
 class DecodeExecuteBundle extends Bundle {
   val valid = Bool()
@@ -17,6 +18,9 @@ class DecodeExecuteBundle extends Bundle {
   val memAddress = UInt(32.W)
   val memWriteData = UInt(32.W)
   val signals = new ControlSignals
+  val csrAddress = UInt(12.W)
+  val csrWriteData = UInt(32.W)
+  val csrReadData = UInt(32.W)
 }
 
 /** Pipeline RV32I educacional de 3 estagios, inspirado no Wildcat do livro: IF,
@@ -79,24 +83,62 @@ class Pipeline3(
   // Interrupção do Timer (TODO)
   val timer_interrupt = WireDefault(false.B)
 
-  // CLINT
+  val interrupt_flag = WireDefault(InterruptCode.None)
+
+  when(timer_interrupt) {
+    interrupt_flag := InterruptCode.Timer0
+  }
+
+  // CLINT e CSRs
+  val csr = Module(new CSR)
   val clint = Module(new CLINT)
 
-  // Conectar CLINT ao pipeline
-  clint.io.mstatus := ???  // CSR mstatus
-  clint.io.mepc    := ???  // CSR mepc
-  clint.io.mcause  := ???  // CSR mcause
-  clint.io.mtvec   := ???  // CSR mtvec
-  clint.io.mie     := ???  // CSR mie
-  clint.io.pc      := pcReg
-  clint.io.instr   := ifIdInstr  // Instrução no estágio ID
-  clint.io.valid   := !stallPipeline && !flushPipeline
-  clint.io.interrupt_flag := Mux(timer_interrupt, InterruptCode.Timer0, InterruptCode.None)
+  clint.io.mstatus := csr.io.mstatus_read
+  clint.io.mepc    := csr.io.mepc_read
+  clint.io.mcause  := csr.io.mcause_read
+  clint.io.mtvec   := csr.io.mtvec_read
+  clint.io.mie     := csr.io.mie_read
+  clint.io.mtval   := csr.io.mtval_read 
 
-  // Sinais de trap do CLINT
-  val trap_assert  = clint.io.trap_assert
-  val trap_address = clint.io.trap_address
-  val trap_cause   = clint.io.trap_cause
+  // CSRs de S-Mode
+  clint.io.sstatus := csr.io.sstatus_read
+  clint.io.sepc    := csr.io.sepc_read
+  clint.io.scause  := csr.io.scause_read
+  clint.io.stvec   := csr.io.stvec_read
+  clint.io.sie     := csr.io.sie_read
+  clint.io.stval   := csr.io.stval_read
+
+  // CSRs de delegação
+  clint.io.medeleg := csr.io.medeleg_read
+  clint.io.mideleg := csr.io.mideleg_read
+
+  // Modo de privilégio atual
+  clint.io.current_priv := csr.io.current_priv
+
+  // Entradas do pipeline
+  clint.io.pc     := pcReg
+  clint.io.instr  := ifIdInstr
+  clint.io.valid  := !stallPipeline && !flushPipeline
+  clint.io.interrupt_flag := interrupt_flag
+
+  // Conexão CLINT -> CSR (escrita com prioridade)
+  csr.io.clint_write_enable   := clint.io.direct_write_enable
+  csr.io.clint_mstatus_write  := clint.io.mstatus_write_data
+  csr.io.clint_mepc_write     := clint.io.mepc_write_data
+  csr.io.clint_mcause_write   := clint.io.mcause_write_data
+  csr.io.clint_mtval_write    := clint.io.mtval_write_data
+  csr.io.clint_sepc_write     := clint.io.sepc_write_data
+  csr.io.clint_scause_write   := clint.io.scause_write_data
+  csr.io.clint_stval_write    := clint.io.stval_write_data
+  csr.io.clint_sstatus_write  := clint.io.sstatus_write_data
+
+  // CONEXÃO CPU -> CSR
+  csr.io.read_address    := ifIdInstr(31, 20)   // Endereço do CSR na instrução
+  csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal && 
+                              idEx.signals.csrWrite && 
+                              !clint.io.direct_write_enable
+  csr.io.cpu_write_address := idEx.csrAddress
+  csr.io.cpu_write_data    := idEx.csrWriteData
 
   // Controle de CSR via CLINT
   val csr_write_enable = clint.io.direct_write_enable
@@ -217,9 +259,32 @@ class Pipeline3(
   dataMem.io.memSize := idEx.signals.memSize
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
+  val csrReadData = csr.io.read_data
+
+  // CÁLCULO DO VALOR A SER ESCRITO NO CSR
+  val csrSrc = Mux(
+    idEx.signals.csrOp(2),  // 1 = imediato (CSRRWI, CSRRSI, CSRRCI)
+    idEx.rs1,               // Imediato de 5 bits (zero-extended)
+    idEx.rs1Value           // Valor do registrador
+  )
+
+  val csrWriteData = MuxLookup(idEx.signals.csrOp, 0.U(32.W))(
+    Seq(
+      1.U -> csrSrc,                              // CSRRW
+      2.U -> (csrReadData | csrSrc),              // CSRRS
+      3.U -> (csrReadData & ~csrSrc),             // CSRRC
+      5.U -> csrSrc,                              // CSRRWI
+      6.U -> (csrReadData | csrSrc),              // CSRRSI
+      7.U -> (csrReadData & ~csrSrc),             // CSRRCI
+    )
+  )
+
   val writebackData = WireDefault(ula.io.result)
-  when(idEx.signals.writebackSel === WritebackSel.MEM && !isLR && !isAMO) {
-    writebackData := dataMem.io.readData
+  switch(idEx.signals.writebackSel) {
+    is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
+    is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
+    is(WritebackSel.IMM) { writebackData := idEx.imm }
+    is(WritebackSel.CSR) { writebackData := csrReadData }
   }
 
   // LR.W: valor lido da memória
@@ -235,13 +300,6 @@ class Pipeline3(
   // AMOs: valor lido da memória (valor antigo)
   when(isAMO) {
     writebackData := dataMem.io.readData
-  }
-
-  when(idEx.signals.writebackSel === WritebackSel.PC4) {
-    writebackData := idEx.pc + 4.U
-  }
-  when(idEx.signals.writebackSel === WritebackSel.IMM) {
-    writebackData := idEx.imm
   }
 
   // Endereço alinhado para LR/SC/AMO (deve ser word-aligned, bits 1:0 = 0)
@@ -345,6 +403,9 @@ class Pipeline3(
     idEx.memAddress := decodedMemAddress
     idEx.memWriteData := forwardedRs2
     idEx.signals := controller.io.signals
+    idEx.csrAddress := ifIdInstr(31, 20)
+    idEx.csrWriteData := csrWriteData
+    idEx.csrReadData := csrReadData
   }
 
   when(controlRedirect) {

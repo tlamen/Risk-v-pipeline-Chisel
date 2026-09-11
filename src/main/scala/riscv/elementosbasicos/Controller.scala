@@ -12,7 +12,7 @@ class ControlSignals extends Bundle {
   val memSize = UInt(2.W)
   val memUnsigned = Bool()
   val branchType = UInt(3.W)
-  val writebackSel = UInt(2.W)
+  val writebackSel = UInt(3.W)
   val jump = Bool()
   val jalr = Bool()
   val illegal = Bool()
@@ -22,6 +22,9 @@ class ControlSignals extends Bundle {
   val amoOp = UInt(4.W)
   val amoAq = Bool()
   val amoRl = Bool()
+  val csrWrite = Bool()
+  val csrRead = Bool()
+  val csrOp = UInt(3.W) 
 }
 
 class Controller extends Module {
@@ -54,6 +57,9 @@ class Controller extends Module {
   io.signals.amoRl := false.B
   val illegal = WireDefault(true.B)
   io.signals.illegal := illegal
+  io.signals.csrWrite := false.B
+  io.signals.csrRead := false.B
+  io.signals.csrOp := 0.U 
 
   val amoFunct5 = io.funct7(6, 2)
   val amoAq = io.funct7(1)  // bit 1 = acquire
@@ -326,6 +332,47 @@ class Controller extends Module {
         }
       }
     }
+
+    is(Opcode.SYSTEM) {
+      illegal := false.B
+      
+      when(io.funct3 === "b000".U) {
+        // ============================================================
+        // INSTRUÇÕES PRIVILEGIADAS (ECALL, EBREAK, MRET, SRET, WFI)
+        // ============================================================
+        // Não fazem writeback. O CLINT detecta pelo valor completo da instrução.
+        // Não ativam csrWrite (o CLINT cuida da trap).
+        io.signals.regWrite := false.B
+        io.signals.csrWrite := false.B
+        io.signals.csrRead := false.B
+        
+      } .otherwise {
+        // ============================================================
+        // INSTRUÇÕES CSR (CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI)
+        // ============================================================
+        io.signals.regWrite := true.B        // Escreve o valor lido em rd
+        io.signals.csrWrite := true.B        // Escreve no CSR
+        io.signals.csrRead := true.B         // Lê do CSR
+        io.signals.writebackSel := WritebackSel.CSR  // Valor lido do CSR → rd
+        
+        switch(io.funct3) {
+          is("b001".U) { io.signals.csrOp := 1.U }  // CSRRW
+          is("b010".U) { io.signals.csrOp := 2.U }  // CSRRS
+          is("b011".U) { io.signals.csrOp := 3.U }  // CSRRC
+          is("b101".U) { io.signals.csrOp := 5.U }  // CSRRWI
+          is("b110".U) { io.signals.csrOp := 6.U }  // CSRRSI
+          is("b111".U) { io.signals.csrOp := 7.U }  // CSRRCI
+        }
+
+        val csrFunct3Valido = io.funct3 === "b001".U || io.funct3 === "b010".U ||
+                              io.funct3 === "b011".U || io.funct3 === "b101".U ||
+                              io.funct3 === "b110".U || io.funct3 === "b111".U
+
+        when(!csrFunct3Valido) {
+          illegal := true.B
+        }
+      }
+    }
   }
 
   when(illegal) {
@@ -336,5 +383,8 @@ class Controller extends Module {
     io.signals.isLR := false.B
     io.signals.isSC := false.B
     io.signals.isAMO := false.B
+    io.signals.csrWrite := false.B
+    io.signals.csrRead := false.B
+    io.signals.csrOp := 0.U  
   }
 }
