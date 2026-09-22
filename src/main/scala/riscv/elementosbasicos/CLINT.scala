@@ -70,6 +70,23 @@ class CLINT extends Module {
   
   import RV32I._
   
+  // ============================================================
+  // VALORES PADRÃO (garantem que todas as saídas estão inicializadas)
+  // ============================================================
+  io.mstatus_write_data := io.mstatus
+  io.mepc_write_data    := io.mepc
+  io.mcause_write_data  := io.mcause
+  io.mtval_write_data   := io.mtval
+  io.sstatus_write_data := io.sstatus
+  io.sepc_write_data    := io.sepc
+  io.scause_write_data  := io.scause
+  io.stval_write_data   := io.stval
+  io.direct_write_enable := false.B
+  io.trap_assert        := false.B
+  io.trap_address       := io.mtvec
+  io.trap_cause         := 0.U
+  io.trap_to_smode      := false.B
+
   // 1. ESTADO ATUAL
   val current_priv = io.current_priv
   
