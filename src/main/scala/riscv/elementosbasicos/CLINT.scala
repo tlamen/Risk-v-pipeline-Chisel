@@ -150,9 +150,9 @@ class CLINT extends Module {
   when(current_priv === PrivilegeMode.M) {
     delegate_to_smode := false.B
   } .elsewhen(is_interrupt) {
-    delegate_to_smode := io.mideleg(exception_code)
+    delegate_to_smode := io.mideleg(exception_code(4, 0))
   } .otherwise {
-    delegate_to_smode := io.medeleg(exception_code)
+    delegate_to_smode := io.medeleg(exception_code(4, 0))
   }
 
   // 4. TRAP ENTRY - M-MODE
