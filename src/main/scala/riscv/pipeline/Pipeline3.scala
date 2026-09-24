@@ -273,10 +273,37 @@ class Pipeline3(
   dataMem.io.memSize := idEx.signals.memSize
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
-  val writebackEnable =
-  idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite
+  val idRs1 = ifIdInstr(19, 15)
+  val idRs2 = ifIdInstr(24, 20)
 
+  val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
+                      (idRs2 === idEx.rd && idRs2 =/= 0.U)
+  val isLoadInEx = idEx.valid &&
+                   idEx.signals.writebackSel === WritebackSel.MEM &&
+                   !idEx.signals.memWrite &&
+                   idEx.signals.regWrite &&
+                   idEx.signals.branchType === BranchType.NONE &&
+                   !idEx.signals.jump &&
+                   !idEx.signals.jalr &&
+                   !idEx.signals.illegal
+  val loadUseHazard = isLoadInEx && currentUsesRd
+
+  val hazardDetected = loadUseHazard
+
+  stallPipeline := hazardDetected
+  flushPipeline := controlRedirect
+
+  val lwWbValid = RegInit(false.B)
+  val lwWbRd    = RegInit(0.U(5.W))
+  val lwWbData  = RegInit(0.U(32.W))
+
+  val writebackEnable = (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite) || lwWbValid
+  val writebackRd = Mux(lwWbValid, lwWbRd, idEx.rd)
   val writebackData = WireDefault(ula.io.result)
+
+  when(lwWbValid) {
+    writebackData := lwWbData
+  }
 
   val csrAddressID = ifIdInstr(31, 20)
   val csrAddressEX = idEx.csrAddress
@@ -286,24 +313,25 @@ class Pipeline3(
                       idEx.signals.csrWrite && 
                       (csrAddressID === csrAddressEX)
 
-  when(csrForwarding) {
-    printf(p"[CSR FORWARDING] addr=0x${csrAddressID}%, data=0x${idEx.csrWriteData}%\n")
-  }
-
-  val idRs1 = ifIdInstr(19, 15)
-  val idRs2 = ifIdInstr(24, 20)
-
   val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
 
   val forwardedRs1 = Mux(
     writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
     writebackData,
-    regFile.io.readData1
+    Mux(
+      writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
+      writebackData,
+      regFile.io.readData1
+    )
   )
   val forwardedRs2 = Mux(
     writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
     writebackData,
-    regFile.io.readData2
+    Mux(
+      writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
+      writebackData,
+      regFile.io.readData2
+    )
   )
   val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
@@ -324,29 +352,50 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
-  when(csrForwarding || controller.io.signals.csrWrite || idEx.signals.csrWrite) {
-         printf(p"[CSR DEBUG] ifIdInstr=0x${ifIdInstr}%, idEx.instr=0x${idEx.instr}%, " +
-         p"csrAddressID=0x${csrAddressID}%, csrAddressEX=0x${csrAddressEX}%, " +
-         p"idEx.csrWriteData=0x${idEx.csrWriteData}%, " +
-         p"forwardedRs1=0x${forwardedRs1}%, csrSrc=0x${csrSrc}%, " +
-         p"csrWriteData=0x${csrWriteData}%\n")
-  }
+  pcReg := pcNext
+  when(stallPipeline) {
+    lwWbValid := true.B
+    lwWbRd := idEx.rd
+    lwWbData := dataMem.io.readData
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle) 
+  } .elsewhen(flushPipeline || controlRedirect) {
+    // FLUSH: insere NOP no IF/ID e limpa o ID/EX
+    lwWbValid := false.B 
+    ifIdPc := pcReg
+    ifIdInstr := nop
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
+  } .otherwise {
+    // ATUALIZAÇÃO NORMAL
+    lwWbValid := false.B 
+    ifIdPc := pcReg
+    ifIdInstr := Mux(controlRedirect, nop, instrMem.io.readData)
 
-  when(controller.io.signals.csrWrite) {
-    printf(p"[CSR ID] ifIdInstr=0x${ifIdInstr}%, forwardedRs1=${forwardedRs1}%, " +
-          p"csrSrc=${csrSrc}%, csrWriteData=${csrWriteData}%\n")
+    idEx.valid := !controlRedirect
+    idEx.pc := ifIdPc
+    idEx.instr := ifIdInstr
+    idEx.rs1 := idRs1
+    idEx.rs2 := idRs2
+    idEx.rd := ifIdInstr(11, 7)
+    idEx.rs1Value := forwardedRs1
+    idEx.rs2Value := forwardedRs2
+    idEx.imm := immGen.io.imm
+    idEx.memAddress := decodedMemAddress
+    idEx.memWriteData := forwardedRs2
+    idEx.signals := controller.io.signals
+    idEx.csrAddress := ifIdInstr(31, 20)
+    idEx.csrWriteData := csrWriteData
+    idEx.csrReadData := csrReadData
   }
-
-  when(csr.io.cpu_write_enable) {
-    printf(p"[CSR WRITE] addr=0x${csr.io.cpu_write_address}%, data=0x${csr.io.cpu_write_data}%\n")
-  }
-  printf(p"[IDEX] csrReadData=0x${csrReadData}%, idEx.csrReadData=0x${idEx.csrReadData}%\n")
 
   switch(idEx.signals.writebackSel) {
     is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
     is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
     is(WritebackSel.IMM) { writebackData := idEx.imm }
     is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
+  }
+
+  when(lwWbValid) {
+    writebackData := lwWbData
   }
 
   // LR.W: valor lido da memória
@@ -398,59 +447,6 @@ class Pipeline3(
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
 
-  val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
-                      (idRs2 === idEx.rd && idRs2 =/= 0.U)
-  val isLoadInEx = idEx.valid &&
-                   idEx.signals.writebackSel === WritebackSel.MEM &&
-                   !idEx.signals.memWrite &&
-                   idEx.signals.regWrite &&
-                   idEx.signals.branchType === BranchType.NONE &&
-                   !idEx.signals.jump &&
-                   !idEx.signals.jalr &&
-                   !idEx.signals.illegal
-  val loadUseHazard = isLoadInEx && currentUsesRd
-
-  val hazardDetected = loadUseHazard
-
-  stallPipeline := hazardDetected
-  flushPipeline := controlRedirect
-
-  pcReg := pcNext
-  when(stallPipeline) {
-    // Mantém valores (stall)
-  }.elsewhen(flushPipeline) {
-    // Flush: insere NOP
-    ifIdPc := pcReg
-    ifIdInstr := nop
-  }.otherwise {
-    // Atualização normal
-    ifIdPc := pcReg
-    ifIdInstr := Mux(controlRedirect, nop, instrMem.io.readData)
-  }
-
-  when(stallPipeline) {
-    // Mantém valores (stall)
-  }.elsewhen(flushPipeline || controlRedirect) {
-    // Flush: zera o estágio
-    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
-  }.otherwise {
-    idEx.valid := !controlRedirect
-    idEx.pc := ifIdPc
-    idEx.instr := ifIdInstr
-    idEx.rs1 := idRs1
-    idEx.rs2 := idRs2
-    idEx.rd := ifIdInstr(11, 7)
-    idEx.rs1Value := forwardedRs1
-    idEx.rs2Value := forwardedRs2
-    idEx.imm := immGen.io.imm
-    idEx.memAddress := decodedMemAddress
-    idEx.memWriteData := forwardedRs2
-    idEx.signals := controller.io.signals
-    idEx.csrAddress := ifIdInstr(31, 20)
-    idEx.csrWriteData := csrWriteData
-    idEx.csrReadData := csrReadData
-  }
-
   when(controlRedirect) {
     idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
   }
@@ -459,7 +455,7 @@ class Pipeline3(
   io.instr := ifIdInstr
   io.aluResult := ula.io.result
   io.writebackData := writebackData
-  io.writebackRd := idEx.rd
+  io.writebackRd := writebackRd
   io.writebackEnable := writebackEnable
   io.illegal := idEx.valid && idEx.signals.illegal
   io.stalled := stallPipeline

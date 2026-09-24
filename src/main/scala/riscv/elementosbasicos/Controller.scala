@@ -65,10 +65,6 @@ class Controller extends Module {
   val amoAq = io.funct7(1)  // bit 1 = acquire
   val amoRl = io.funct7(0)  // bit 0 = release
 
-  when(io.opcode === Opcode.SYSTEM) {
-    printf(p"[CTRL] funct3=${io.funct3}%, csrOp=${io.signals.csrOp}%\n")
-  }
-
   switch(io.opcode) {
     is(Opcode.OP) {
       illegal := false.B

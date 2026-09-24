@@ -100,7 +100,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
     )
 
     test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
-      println("COMECA O TESTE 1")
       val x1 = new WritebackTracker
       val x2 = new WritebackTracker
       val x3 = new WritebackTracker
@@ -120,7 +119,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
         dut.clock.step(1)
       }
       
-      println("TERMINA O TESTE 1")
       assert(x1.capturado, "x1 não foi escrito")
       assert(x1.valor == BigInt(0x100),
         s"x1 esperado 0x100, obtido 0x${x1.valor.toString(16)}")
@@ -268,8 +266,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
           val rd = dut.io.writebackRd.peekInt().toInt
           val data = dut.io.writebackData.peekInt()
 
-          println(s"[CICLO] rd=$rd, data=0x${data.toString(16)}")
-
           rd match {
             case 6 => x6.capturar(data)
             case _ =>
@@ -290,9 +286,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
   // ============================================================
   it should "ler mtvec após escrever" in {
     val program = Seq(
-      addi(1, 0, 0xABCD),     // 0x00
-      csrrw(0, 0x305, 1),     // 0x04: mtvec = 0xABCD
-      csrrs(2, 0x305, 0),     // 0x08: x2 = mtvec (0xABCD)
+      addi(1, 0, 0x7FF),  // x1 = 0x7FF (2047)
+      csrrw(0, 0x305, 1), // mtvec = 0x7FF
+      csrrs(2, 0x305, 0), // x2 = mtvec = 0x7FF)
       NOP,                    // 0x0C
     )
 
@@ -304,8 +300,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
           val rd = dut.io.writebackRd.peekInt().toInt
           val data = dut.io.writebackData.peekInt()
 
-          println(s"[CICLO] rd=$rd, data=0x${data.toString(16)}")
-
           rd match {
             case 2 => x2.capturar(data)
             case _ =>
@@ -315,7 +309,7 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       }
 
       assert(x2.capturado, "x2 não foi escrito")
-      assert(x2.valor == BigInt(0xABCD),
+      assert(x2.valor == BigInt(0x7FF),
         s"x2 esperado 0xABCD, obtido 0x${x2.valor.toString(16)}")
     }
   }
@@ -413,8 +407,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
         if (dut.io.writebackEnable.peekBoolean()) {
           val rd = dut.io.writebackRd.peekInt().toInt
           val data = dut.io.writebackData.peekInt()
-
-          println(s"[CICLO] rd=$rd, data=0x${data.toString(16)}")
 
           rd match {
             case 4 => x4.capturar(data)
