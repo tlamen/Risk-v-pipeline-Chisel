@@ -59,11 +59,15 @@ class Controller extends Module {
   io.signals.illegal := illegal
   io.signals.csrWrite := false.B
   io.signals.csrRead := false.B
-  io.signals.csrOp := 0.U 
+  io.signals.csrOp := 0.U
 
   val amoFunct5 = io.funct7(6, 2)
   val amoAq = io.funct7(1)  // bit 1 = acquire
   val amoRl = io.funct7(0)  // bit 0 = release
+
+  when(io.opcode === Opcode.SYSTEM) {
+    printf(p"[CTRL] funct3=${io.funct3}%, csrOp=${io.signals.csrOp}%\n")
+  }
 
   switch(io.opcode) {
     is(Opcode.OP) {
@@ -385,6 +389,6 @@ class Controller extends Module {
     io.signals.isAMO := false.B
     io.signals.csrWrite := false.B
     io.signals.csrRead := false.B
-    io.signals.csrOp := 0.U  
+    // io.signals.csrOp := 0.U  
   }
 }

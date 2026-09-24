@@ -63,6 +63,14 @@ class CLINTInterface extends Bundle {
   val trap_address  = Output(UInt(32.W))
   val trap_cause    = Output(UInt(32.W))
   val trap_to_smode = Output(Bool())  // NOVO: indica trap para S-Mode
+
+  val debug_trap_assert     = Output(Bool())
+  val debug_trap_to_smode   = Output(Bool())
+  val debug_delegate_to_smode = Output(Bool())
+  val debug_exception_code  = Output(UInt(31.W))
+  val debug_is_interrupt    = Output(Bool())
+  val debug_trap_address    = Output(UInt(32.W))
+  val debug_direct_write_enable = Output(Bool())
 }
 
 class CLINT extends Module {
@@ -225,7 +233,7 @@ class CLINT extends Module {
         s_mie,
         io.sstatus(4, 2),
         0.U(1.W),
-        io.sstatus(1, 0)
+        io.sstatus(0, 0)
       )
       io.sepc_write_data := io.pc
       io.scause_write_data := Cat(0.U(1.W), exception_code)
@@ -306,7 +314,7 @@ class CLINT extends Module {
       1.U(1.W),                       // SPIE ← 1
       io.sstatus(4, 2),
       s_spie,                         // SIE ← SPIE
-      io.sstatus(1, 0)
+      io.sstatus(0, 0)
     )
     io.sepc_write_data := io.sepc
     io.scause_write_data := io.scause
@@ -342,4 +350,11 @@ class CLINT extends Module {
   io.trap_address  := trap_address_internal
   io.trap_cause    := trap_cause_internal
   io.trap_to_smode := trap_to_smode_internal
+  io.debug_trap_assert      := trap_assert_internal
+  io.debug_trap_to_smode    := trap_to_smode_internal
+  io.debug_delegate_to_smode := delegate_to_smode
+  io.debug_exception_code   := exception_code
+  io.debug_is_interrupt     := is_interrupt
+  io.debug_trap_address     := trap_address_internal
+  io.debug_direct_write_enable := io.direct_write_enable
 }

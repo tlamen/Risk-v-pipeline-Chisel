@@ -30,7 +30,7 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   // ============================================================
-  // TESTE 1: ECALL sem delegação → trap para M-Mode
+  // TESTE 1: ECALL sem delegação → trap para M-Mode - OK
   // ============================================================
   it should "gerar trap para M-Mode em ECALL sem delegação" in {
     test(new CLINT) { dut =>
@@ -119,7 +119,7 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.direct_write_enable.expect(true.B)
       
       // mcause = bit 31 (interrupção) + 7 (Machine Timer Interrupt)
-      val mcause_esperado = BigInt(1) << 31 | BigInt(7)
+      val mcause_esperado = BigInt(1) << 31 | BigInt(5)
       dut.io.mcause_write_data.expect(mcause_esperado.U(32.W))
       
       // mepc = PC (para interrupções, o RISC-V usa PC+4, mas no seu CLINT atual é PC)
@@ -146,7 +146,7 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.mie.poke(0.U)
       dut.io.mtval.poke(0.U)
       
-      dut.io.sstatus.poke(0.U)
+      dut.io.sstatus.poke((1 << 1).U(32.W))
       dut.io.sepc.poke(0.U)
       dut.io.scause.poke(0.U)
       dut.io.stvec.poke(0x9000.U)   // handler em S-Mode

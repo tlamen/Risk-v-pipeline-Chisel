@@ -44,6 +44,20 @@ class Pipeline3(
     val writebackEnable = Output(Bool())
     val illegal = Output(Bool())
     val stalled = Output(Bool())
+
+    //CLINT debug
+    val debug_clint_trap_assert      = Output(Bool())
+    val debug_clint_trap_to_smode    = Output(Bool())
+    val debug_clint_delegate_to_smode = Output(Bool())
+    val debug_clint_exception_code   = Output(UInt(31.W))
+    val debug_clint_is_interrupt     = Output(Bool())
+    val debug_clint_trap_address     = Output(UInt(32.W))
+    
+    //CSR debug
+    val debug_csrReadData = Output(UInt(32.W))
+    val debug_csrForwarding = Output(Bool())
+    val debug_csr_address_id = Output(UInt(12.W))
+    val debug_csr_address_ex = Output(UInt(12.W))
   })
 
   import RV32I._
@@ -259,32 +273,80 @@ class Pipeline3(
   dataMem.io.memSize := idEx.signals.memSize
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
-  val csrReadData = csr.io.read_data
+  val writebackEnable =
+  idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite
+
+  val writebackData = WireDefault(ula.io.result)
+
+  val csrAddressID = ifIdInstr(31, 20)
+  val csrAddressEX = idEx.csrAddress
+
+  val csrForwarding = idEx.valid && 
+                      !idEx.signals.illegal && 
+                      idEx.signals.csrWrite && 
+                      (csrAddressID === csrAddressEX)
+
+  when(csrForwarding) {
+    printf(p"[CSR FORWARDING] addr=0x${csrAddressID}%, data=0x${idEx.csrWriteData}%\n")
+  }
+
+  val idRs1 = ifIdInstr(19, 15)
+  val idRs2 = ifIdInstr(24, 20)
+
+  val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
+
+  val forwardedRs1 = Mux(
+    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
+    writebackData,
+    regFile.io.readData1
+  )
+  val forwardedRs2 = Mux(
+    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
+    writebackData,
+    regFile.io.readData2
+  )
+  val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
   // CÁLCULO DO VALOR A SER ESCRITO NO CSR
   val csrSrc = Mux(
-    idEx.signals.csrOp(2),  // 1 = imediato (CSRRWI, CSRRSI, CSRRCI)
-    idEx.rs1,               // Imediato de 5 bits (zero-extended)
-    idEx.rs1Value           // Valor do registrador
+    controller.io.signals.csrOp(2),  // 1 = imediato (CSRRWI, CSRRSI, CSRRCI)
+    ifIdInstr(19, 15),               // Imediato de 5 bits (zero-extended)
+    forwardedRs1          // Valor do registrador
   )
 
-  val csrWriteData = MuxLookup(idEx.signals.csrOp, 0.U(32.W))(
-    Seq(
-      1.U -> csrSrc,                              // CSRRW
-      2.U -> (csrReadData | csrSrc),              // CSRRS
-      3.U -> (csrReadData & ~csrSrc),             // CSRRC
-      5.U -> csrSrc,                              // CSRRWI
-      6.U -> (csrReadData | csrSrc),              // CSRRSI
-      7.U -> (csrReadData & ~csrSrc),             // CSRRCI
-    )
-  )
+  val csrWriteData = WireDefault(0.U(32.W))
+  switch(controller.io.signals.csrOp) {
+    is(1.U) { csrWriteData := csrSrc }
+    is(2.U) { csrWriteData := csrReadData | csrSrc }
+    is(3.U) { csrWriteData := csrReadData & ~csrSrc }
+    is(5.U) { csrWriteData := csrSrc }
+    is(6.U) { csrWriteData := csrReadData | csrSrc }
+    is(7.U) { csrWriteData := csrReadData & ~csrSrc }
+  }
 
-  val writebackData = WireDefault(ula.io.result)
+  when(csrForwarding || controller.io.signals.csrWrite || idEx.signals.csrWrite) {
+         printf(p"[CSR DEBUG] ifIdInstr=0x${ifIdInstr}%, idEx.instr=0x${idEx.instr}%, " +
+         p"csrAddressID=0x${csrAddressID}%, csrAddressEX=0x${csrAddressEX}%, " +
+         p"idEx.csrWriteData=0x${idEx.csrWriteData}%, " +
+         p"forwardedRs1=0x${forwardedRs1}%, csrSrc=0x${csrSrc}%, " +
+         p"csrWriteData=0x${csrWriteData}%\n")
+  }
+
+  when(controller.io.signals.csrWrite) {
+    printf(p"[CSR ID] ifIdInstr=0x${ifIdInstr}%, forwardedRs1=${forwardedRs1}%, " +
+          p"csrSrc=${csrSrc}%, csrWriteData=${csrWriteData}%\n")
+  }
+
+  when(csr.io.cpu_write_enable) {
+    printf(p"[CSR WRITE] addr=0x${csr.io.cpu_write_address}%, data=0x${csr.io.cpu_write_data}%\n")
+  }
+  printf(p"[IDEX] csrReadData=0x${csrReadData}%, idEx.csrReadData=0x${idEx.csrReadData}%\n")
+
   switch(idEx.signals.writebackSel) {
     is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
     is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
     is(WritebackSel.IMM) { writebackData := idEx.imm }
-    is(WritebackSel.CSR) { writebackData := csrReadData }
+    is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
   }
 
   // LR.W: valor lido da memória
@@ -325,9 +387,6 @@ class Pipeline3(
     idEx.signals.illegal := true.B
   }
 
-  val writebackEnable =
-    idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite
-
   regFile.io.rs1 := ifIdInstr(19, 15)
   regFile.io.rs2 := ifIdInstr(24, 20)
   regFile.io.rd := idEx.rd
@@ -338,9 +397,6 @@ class Pipeline3(
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
-
-  val idRs1 = ifIdInstr(19, 15)
-  val idRs2 = ifIdInstr(24, 20)
 
   val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
                       (idRs2 === idEx.rd && idRs2 =/= 0.U)
@@ -358,19 +414,6 @@ class Pipeline3(
 
   stallPipeline := hazardDetected
   flushPipeline := controlRedirect
-
-
-  val forwardedRs1 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
-    writebackData,
-    regFile.io.readData1
-  )
-  val forwardedRs2 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
-    writebackData,
-    regFile.io.readData2
-  )
-  val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
   pcReg := pcNext
   when(stallPipeline) {
@@ -420,4 +463,18 @@ class Pipeline3(
   io.writebackEnable := writebackEnable
   io.illegal := idEx.valid && idEx.signals.illegal
   io.stalled := stallPipeline
+  
+  // Debug do CLINT
+  io.debug_clint_trap_assert      := clint.io.debug_trap_assert
+  io.debug_clint_trap_to_smode    := clint.io.debug_trap_to_smode
+  io.debug_clint_delegate_to_smode := clint.io.debug_delegate_to_smode
+  io.debug_clint_exception_code   := clint.io.debug_exception_code
+  io.debug_clint_is_interrupt     := clint.io.debug_is_interrupt
+  io.debug_clint_trap_address     := clint.io.debug_trap_address
+
+  // Debug do CSR forwarding
+  io.debug_csrReadData  := csrReadData
+  io.debug_csrForwarding := csrForwarding
+  io.debug_csr_address_id := csrAddressID
+  io.debug_csr_address_ex := csrAddressEX
 }
