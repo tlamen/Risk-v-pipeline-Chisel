@@ -135,8 +135,26 @@ class Pipeline3(
   // ============================================================
   // 5. INTERRUPÇÕES (a implementar)
   // ============================================================
-  val timer_interrupt = WireDefault(false.B)
-  val interrupt_flag  = WireDefault(InterruptCode.None)
+  val timer = Module(new Timer)
+
+  // Endereço base do Timer (MMIO)
+  val TIMER_BASE = Parameters.TimerBaseAddress.U(32.W)
+
+  // Decodificação: endereço pertence ao Timer
+  // No Pipeline3
+  val isTimerAddress = idEx.memAddress(31, 12) === Parameters.TimerBaseAddress.U(32.W)(31, 12)
+  val memReadData = Mux(isTimerAddress, timer.io.bundle.read_data, dataMem.io.readData)
+
+                      // Conexão do Timer ao barramento MMIO
+  timer.io.bundle.address      := idEx.memAddress - TIMER_BASE
+  timer.io.bundle.write_data   := idEx.memWriteData
+  timer.io.bundle.write_enable := idEx.valid && 
+                                  !idEx.signals.illegal && 
+                                  idEx.signals.memWrite && 
+                                  isTimerAddress
+
+  val timer_interrupt = timer.io.signal_interrupt
+  val interrupt_flag = WireDefault(InterruptCode.None)
 
   when(timer_interrupt) {
     interrupt_flag := InterruptCode.Timer0
@@ -278,14 +296,14 @@ class Pipeline3(
   // 12a. Writeback data (prioridade: lwWb > writebackSel > ULA)
   val writebackData = WireDefault(ula.io.result)
   switch(idEx.signals.writebackSel) {
-    is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
+    is(WritebackSel.MEM) { writebackData := memReadData }
     is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
     is(WritebackSel.IMM) { writebackData := idEx.imm }
     is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
   }
-  when(isLR)  { writebackData := dataMem.io.readData }
+  when(isLR)  { writebackData := memReadData }
   when(isSC)  { writebackData := Mux(scSuccess, 0.U, 1.U) }
-  when(isAMO) { writebackData := dataMem.io.readData }
+  when(isAMO) { writebackData := memReadData }
   when(lwWbValid) { writebackData := lwWbData }
 
   // 12b. Writeback enable/rd
@@ -344,7 +362,10 @@ class Pipeline3(
   // ============================================================
   dataMem.io.address     := idEx.memAddress
   dataMem.io.writeData   := idEx.memWriteData
-  dataMem.io.writeEnable := idEx.valid && !idEx.signals.illegal && idEx.signals.memWrite
+  dataMem.io.writeEnable := idEx.valid && 
+                          !idEx.signals.illegal && 
+                          idEx.signals.memWrite && 
+                          !isTimerAddress
   dataMem.io.memSize     := idEx.signals.memSize
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
