@@ -140,9 +140,10 @@ class Pipeline3(
   // Endereço base do Timer (MMIO)
   val TIMER_BASE = Parameters.TimerBaseAddress.U(32.W)
 
-  // Decodificação: endereço pertence ao Timer?
-  val isTimerAddress = (idEx.memAddress >= TIMER_BASE) && 
-                      (idEx.memAddress < (TIMER_BASE + 0x1000.U))
+  // Decodificação: endereço pertence ao Timer
+  // No Pipeline3
+  val isTimerAddress = idEx.memAddress(31, 12) === Parameters.TimerBaseAddress.U(32.W)(31, 12)
+  val memReadData = Mux(isTimerAddress, timer.io.bundle.read_data, dataMem.io.readData)
 
                       // Conexão do Timer ao barramento MMIO
   timer.io.bundle.address      := idEx.memAddress - TIMER_BASE
@@ -151,11 +152,6 @@ class Pipeline3(
                                   !idEx.signals.illegal && 
                                   idEx.signals.memWrite && 
                                   isTimerAddress
-
-  // Leitura: mux entre memória principal e periféricos
-  val memReadData = Mux(isTimerAddress, 
-                        timer.io.bundle.read_data, 
-                        dataMem.io.readData)
 
   val timer_interrupt = timer.io.signal_interrupt
   val interrupt_flag = WireDefault(InterruptCode.None)

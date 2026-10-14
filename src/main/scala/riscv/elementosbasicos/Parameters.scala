@@ -21,6 +21,9 @@ object Parameters {
   // Valor padrão do limite do timer (~1s a 100MHz)
   val TimerDefaultLimit = 100000000
 
+  val TimerBaseAddress = 0x80000000L
+  val TimerAddressMask = 0x00000FFFL  // 4 KB de espaço
+
   // ============================================================
   // MMU (Sv32) - para uso futuro
   // ============================================================
@@ -33,9 +36,4 @@ object Parameters {
   // INTERRUPÇÕES
   // ============================================================
   val InterruptFlagWidth = 8  // Largura do sinal interrupt_flag
-
-  // ============================================================
-  // PERIFÉRICOS (MMIO)
-  // ============================================================
-  val TimerBaseAddress = 0x80000000L  // Endereço base do Timer
 }

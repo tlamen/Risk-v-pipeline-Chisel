@@ -2,7 +2,8 @@ package riscv
 
 import chisel3._
 import chisel3.util._
-import riscv.elementosbasicos.Parameters
+import riscv.Parameters
+import riscv.RAMBundle
 
 /** Timer periférico com MMIO e geração de interrupção configurável.
   *

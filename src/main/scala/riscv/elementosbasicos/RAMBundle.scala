@@ -1,7 +1,7 @@
-package riscv.peripheral
+package riscv
 
 import chisel3._
-import riscv.elementosbasicos.Parameters
+import riscv.Parameters
 
 /** Bundle padrão para periféricos de memória mapeada (MMIO). */
 class RAMBundle extends Bundle {
