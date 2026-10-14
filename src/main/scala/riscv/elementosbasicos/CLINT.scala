@@ -71,6 +71,11 @@ class CLINTInterface extends Bundle {
   val debug_is_interrupt    = Output(Bool())
   val debug_trap_address    = Output(UInt(32.W))
   val debug_direct_write_enable = Output(Bool())
+
+  // mmu
+  val mmu_fault_valid = Input(Bool())
+  val mmu_fault_cause = Input(UInt(4.W))
+  val mmu_fault_addr  = Input(UInt(32.W))
 }
 
 class CLINT extends Module {
@@ -327,6 +332,81 @@ class CLINT extends Module {
     io.direct_write_enable := true.B
     
   // 8. ESTADO NORMAL
+  } .elsewhen(io.mmu_fault_valid) {
+    // Page fault da MMU
+    trap_assert_internal := true.B
+    
+    // Determinar se vai para S-Mode ou M-Mode
+    when(current_priv === PrivilegeMode.U || current_priv === PrivilegeMode.S) {
+      // Trap para S-Mode (se delegado)
+      when(io.medeleg(io.mmu_fault_cause)) {
+        trap_address_internal := io.stvec
+        trap_to_smode_internal := true.B
+        
+        io.sstatus_write_data := Cat(
+          io.sstatus(31, 9),
+          Mux(current_priv === PrivilegeMode.U, 0.U(1.W), 1.U(1.W)),  // SPP
+          io.sstatus(7, 6),
+          s_mie,                                                       // SPIE
+          io.sstatus(4, 2),
+          0.U(1.W),                                                    // SIE
+          io.sstatus(1, 0)
+        )
+        io.sepc_write_data := io.pc
+        io.scause_write_data := Cat(0.U(1.W), io.mmu_fault_cause)
+        io.stval_write_data := io.mmu_fault_addr
+        
+        io.mstatus_write_data := io.mstatus
+        io.mepc_write_data := io.mepc
+        io.mcause_write_data := io.mcause
+        io.mtval_write_data := io.mtval
+      } .otherwise {
+        // Trap para M-Mode
+        trap_address_internal := io.mtvec
+        
+        io.mstatus_write_data := Cat(
+          io.mstatus(31, 13),
+          Mux(current_priv === PrivilegeMode.U, 0.U(2.W),
+              Mux(current_priv === PrivilegeMode.S, 1.U(2.W), 3.U(2.W))),
+          io.mstatus(10, 8),
+          m_mie,
+          io.mstatus(6, 4),
+          0.U(1.W),
+          io.mstatus(2, 0)
+        )
+        io.mepc_write_data := io.pc
+        io.mcause_write_data := Cat(0.U(1.W), io.mmu_fault_cause)
+        io.mtval_write_data := io.mmu_fault_addr
+        
+        io.sstatus_write_data := io.sstatus
+        io.sepc_write_data := io.sepc
+        io.scause_write_data := io.scause
+        io.stval_write_data := io.stval
+      }
+    } .otherwise {
+      // Já em M-Mode: trap para M-Mode
+      trap_address_internal := io.mtvec
+      
+      io.mstatus_write_data := Cat(
+        io.mstatus(31, 13),
+        3.U(2.W),
+        io.mstatus(10, 8),
+        m_mie,
+        io.mstatus(6, 4),
+        0.U(1.W),
+        io.mstatus(2, 0)
+      )
+      io.mepc_write_data := io.pc
+      io.mcause_write_data := Cat(0.U(1.W), io.mmu_fault_cause)
+      io.mtval_write_data := io.mmu_fault_addr
+      
+      io.sstatus_write_data := io.sstatus
+      io.sepc_write_data := io.sepc
+      io.scause_write_data := io.scause
+      io.stval_write_data := io.stval
+    }
+    
+    io.direct_write_enable := true.B
   } .otherwise {
     trap_assert_internal  := false.B
     trap_to_smode_internal := false.B

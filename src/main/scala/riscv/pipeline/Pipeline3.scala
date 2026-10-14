@@ -9,19 +9,19 @@ import riscv._
 // BUNDLE: registradores do estágio ID/EX
 // ============================================================
 class DecodeExecuteBundle extends Bundle {
-  val valid       = Bool()
-  val pc          = UInt(32.W)
-  val instr       = UInt(32.W)
-  val rs1         = UInt(5.W)
-  val rs2         = UInt(5.W)
-  val rd          = UInt(5.W)
-  val rs1Value    = UInt(32.W)
-  val rs2Value    = UInt(32.W)
-  val imm         = UInt(32.W)
-  val memAddress  = UInt(32.W)
+  val valid        = Bool()
+  val pc           = UInt(32.W)
+  val instr        = UInt(32.W)
+  val rs1          = UInt(5.W)
+  val rs2          = UInt(5.W)
+  val rd           = UInt(5.W)
+  val rs1Value     = UInt(32.W)
+  val rs2Value     = UInt(32.W)
+  val imm          = UInt(32.W)
+  val memAddress   = UInt(32.W)
   val memWriteData = UInt(32.W)
-  val signals     = new ControlSignals
-  val csrAddress  = UInt(12.W)
+  val signals      = new ControlSignals
+  val csrAddress   = UInt(12.W)
   val csrWriteData = UInt(32.W)
   val csrReadData  = UInt(32.W)
 }
@@ -31,13 +31,15 @@ class DecodeExecuteBundle extends Bundle {
   * Estágios:
   *   - IF:       busca de instrução (instrMem + pcReg)
   *   - ID/RF:    decodificação, leitura do banco de registradores e preparação
-  *   - EX/MEM/WB: execução (ULA), acesso à memória e writeback
+  *   - EX/MEM/WB: execução (ULA), acesso à memória (via MMU) e writeback
   *
   * Características:
   *   - memórias de instrução e dados internas;
   *   - forwarding do resultado do estágio EX para o ID;
   *   - stall de um ciclo para load-use hazard (com registrador de WB);
-  *   - suporte a CSRs, CLINT e extensão A (LR/SC e AMOs).
+  *   - suporte a CSRs, CLINT e extensão A (LR/SC e AMOs);
+  *   - MMU Sv32 integrada ao acesso à memória;
+  *   - Timer periférico (MMIO) em 0x80000000.
   */
 class Pipeline3(
     initialProgram: Seq[Long] = Seq.empty,
@@ -63,10 +65,21 @@ class Pipeline3(
     val debug_clint_trap_address      = Output(UInt(32.W))
 
     // Debug do CSR forwarding
-    val debug_csrReadData   = Output(UInt(32.W))
-    val debug_csrForwarding = Output(Bool())
+    val debug_csrReadData    = Output(UInt(32.W))
+    val debug_csrForwarding  = Output(Bool())
     val debug_csr_address_id = Output(UInt(12.W))
     val debug_csr_address_ex = Output(UInt(12.W))
+
+    // Debug da MMU
+    val debug_mmu_physical_addr = Output(UInt(32.W))
+    val debug_mmu_page_fault    = Output(Bool())
+    val debug_mmu_fault_cause   = Output(UInt(4.W))
+    val debug_mmu_fault_addr    = Output(UInt(32.W))
+
+    // Debug do Timer
+    val debug_timer_limit     = Output(UInt(32.W))
+    val debug_timer_enabled   = Output(Bool())
+    val debug_timer_interrupt = Output(Bool())
   })
 
   import RV32I._
@@ -87,6 +100,8 @@ class Pipeline3(
   val ula        = Module(new ULA)
   val csr        = Module(new CSR)
   val clint      = Module(new CLINT)
+  val mmu        = Module(new MMU)
+  val timer      = Module(new Timer)
 
   // ============================================================
   // 2. REGISTRADORES DE PIPELINE
@@ -111,6 +126,11 @@ class Pipeline3(
   val stallPipeline = WireDefault(false.B)
   val flushPipeline = WireDefault(false.B)
 
+  // Sinais da extensão A (dependem apenas do idEx)
+  val isLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
+  val isSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
+  val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+
   // ============================================================
   // 4. CONEXÃO CLINT <-> CSR
   // ============================================================
@@ -128,34 +148,16 @@ class Pipeline3(
   clint.io.sie     := csr.io.sie_read
   clint.io.stval   := csr.io.stval_read
 
-  clint.io.medeleg     := csr.io.medeleg_read
-  clint.io.mideleg     := csr.io.mideleg_read
+  clint.io.medeleg      := csr.io.medeleg_read
+  clint.io.mideleg      := csr.io.mideleg_read
   clint.io.current_priv := csr.io.current_priv
 
   // ============================================================
-  // 5. INTERRUPÇÕES (a implementar)
+  // 5. INTERRUPÇÕES (Timer)
   // ============================================================
-  val timer = Module(new Timer)
-
-  // Endereço base do Timer (MMIO)
-  val TIMER_BASE = Parameters.TimerBaseAddress.U(32.W)
-
-  // Decodificação: endereço pertence ao Timer
-  // No Pipeline3
-  val isTimerAddress = idEx.memAddress(31, 12) === Parameters.TimerBaseAddress.U(32.W)(31, 12)
-  val memReadData = Mux(isTimerAddress, timer.io.bundle.read_data, dataMem.io.readData)
-
-                      // Conexão do Timer ao barramento MMIO
-  timer.io.bundle.address      := idEx.memAddress - TIMER_BASE
-  timer.io.bundle.write_data   := idEx.memWriteData
-  timer.io.bundle.write_enable := idEx.valid && 
-                                  !idEx.signals.illegal && 
-                                  idEx.signals.memWrite && 
-                                  isTimerAddress
-
   val timer_interrupt = timer.io.signal_interrupt
-  val interrupt_flag = WireDefault(InterruptCode.None)
 
+  val interrupt_flag = WireDefault(InterruptCode.None)
   when(timer_interrupt) {
     interrupt_flag := InterruptCode.Timer0
   }
@@ -189,7 +191,7 @@ class Pipeline3(
   val idRs1 = ifIdInstr(19, 15)
   val idRs2 = ifIdInstr(24, 20)
 
-  immGen.io.instr     := ifIdInstr
+  immGen.io.instr      := ifIdInstr
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
@@ -237,7 +239,27 @@ class Pipeline3(
   val redirectTarget = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
 
   // ============================================================
-  // 10. HAZARD DETECTION (load-use)
+  // 10. MMU: TRADUÇÃO DE ENDEREÇO VIRTUAL
+  // ============================================================
+  // Entradas da MMU
+  mmu.io.satp         := csr.io.satp_read
+  mmu.io.sstatus      := csr.io.sstatus_read
+  mmu.io.current_priv := csr.io.current_priv
+
+  // Endereço virtual (do estágio EX)
+  mmu.io.virtual_addr := idEx.memAddress
+
+  // Tipo de acesso: STORE, LOAD ou FETCH
+  val access_type = Mux(idEx.signals.memWrite, AccessType.STORE,
+                    Mux(idEx.signals.writebackSel === WritebackSel.MEM, AccessType.LOAD,
+                        AccessType.FETCH))
+  mmu.io.access_type := access_type
+
+  // Endereço físico (após tradução)
+  val physical_addr = mmu.io.physical_addr
+
+  // ============================================================
+  // 11. HAZARD DETECTION (load-use)
   // ============================================================
   val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
                       (idRs2 === idEx.rd && idRs2 =/= 0.U)
@@ -256,11 +278,57 @@ class Pipeline3(
   flushPipeline := controlRedirect
 
   // ============================================================
-  // 11. EXTENSÃO A: LR/SC e AMOs
+  // 12. CONEXÃO CLINT <-> MMU (page faults)
   // ============================================================
-  val isLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
-  val isSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
-  val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+  clint.io.mmu_fault_valid := mmu.io.page_fault
+  clint.io.mmu_fault_cause := mmu.io.fault_cause
+  clint.io.mmu_fault_addr  := mmu.io.fault_addr
+
+  // ============================================================
+  // 13. ACESSO À MEMÓRIA (com MMU e Timer)
+  // ============================================================
+  // Decodificação do endereço do Timer (MMIO)
+  val TIMER_BASE = Parameters.TimerBaseAddress.U(32.W)
+  val isTimerAddress = idEx.memAddress(31, 12) === TIMER_BASE(31, 12)
+
+  // Endereço da memória: page walker da MMU ou CPU
+  val mem_addr = Mux(mmu.io.mem_read_en, mmu.io.mem_read_addr, physical_addr)
+  dataMem.io.address := mem_addr
+
+  // Dados lidos retornam para a MMU (page walker)
+  mmu.io.mem_read_data := dataMem.io.readData
+
+  // Sinais de escrita
+  dataMem.io.writeData   := idEx.memWriteData
+  dataMem.io.writeEnable := idEx.valid && 
+                            !idEx.signals.illegal && 
+                            idEx.signals.memWrite && 
+                            !mmu.io.page_fault && 
+                            !isTimerAddress
+  dataMem.io.memSize     := idEx.signals.memSize
+  dataMem.io.unsignedLoad := idEx.signals.memUnsigned
+
+  // Conexão do Timer ao barramento MMIO
+  timer.io.bundle.address      := idEx.memAddress
+  timer.io.bundle.write_data   := idEx.memWriteData
+  timer.io.bundle.write_enable := idEx.valid && 
+                                  !idEx.signals.illegal && 
+                                  idEx.signals.memWrite && 
+                                  isTimerAddress
+
+  // Mux de leitura: memória ou Timer
+  val memReadData = Mux(isTimerAddress, 
+                        timer.io.bundle.read_data, 
+                        dataMem.io.readData)
+
+  // ============================================================
+  // 14. EXTENSÃO A: LR/SC e AMOs
+  // ============================================================
+  // LR/SC: sucesso do SC
+  val scSuccess = WireDefault(false.B)
+  when(isSC) {
+    scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
+  }
 
   // LR: estabelece reserva
   when(isLR) {
@@ -268,10 +336,8 @@ class Pipeline3(
     reservationValid := true.B
   }
 
-  // SC: verifica e escreve condicionalmente
-  val scSuccess = WireDefault(false.B)
+  // SC: invalida reserva
   when(isSC) {
-    scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
     reservationValid := false.B
   }
 
@@ -291,9 +357,9 @@ class Pipeline3(
   }
 
   // ============================================================
-  // 12. FORWARDING (registradores e CSR)
+  // 15. FORWARDING (registradores e CSR)
   // ============================================================
-  // 12a. Writeback data (prioridade: lwWb > writebackSel > ULA)
+  // 15a. Writeback data (prioridade: lwWb > LR/SC/AMO > writebackSel > ULA)
   val writebackData = WireDefault(ula.io.result)
   switch(idEx.signals.writebackSel) {
     is(WritebackSel.MEM) { writebackData := memReadData }
@@ -306,18 +372,19 @@ class Pipeline3(
   when(isAMO) { writebackData := memReadData }
   when(lwWbValid) { writebackData := lwWbData }
 
-  // 12b. Writeback enable/rd
-  val writebackEnable = (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite) || lwWbValid
+  // 15b. Writeback enable/rd
+  val writebackEnable = (idEx.valid && !idEx.signals.illegal && 
+                         idEx.signals.regWrite && !mmu.io.page_fault) || lwWbValid
   val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
 
-  // 12c. CSR forwarding
+  // 15c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
   val csrForwarding = idEx.valid && !idEx.signals.illegal &&
                       idEx.signals.csrWrite &&
                       (csrAddressID === csrAddressEX)
   val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
 
-  // 12d. Forwarding de registradores (EX -> ID)
+  // 15d. Forwarding de registradores (EX -> ID)
   val forwardedRs1 = Mux(
     writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
     writebackData,
@@ -333,7 +400,7 @@ class Pipeline3(
   val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
   // ============================================================
-  // 13. CSR: dados a serem escritos e conexão CPU -> CSR
+  // 16. CSR: dados a serem escritos e conexão CPU -> CSR
   // ============================================================
   val csrSrc = Mux(
     controller.io.signals.csrOp(2),
@@ -358,30 +425,20 @@ class Pipeline3(
   csr.io.cpu_write_data    := idEx.csrWriteData
 
   // ============================================================
-  // 14. ACESSO À MEMÓRIA
-  // ============================================================
-  dataMem.io.address     := idEx.memAddress
-  dataMem.io.writeData   := idEx.memWriteData
-  dataMem.io.writeEnable := idEx.valid && 
-                          !idEx.signals.illegal && 
-                          idEx.signals.memWrite && 
-                          !isTimerAddress
-  dataMem.io.memSize     := idEx.signals.memSize
-  dataMem.io.unsignedLoad := idEx.signals.memUnsigned
-
-  // ============================================================
-  // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
+  // 17. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
   // ============================================================
   regFile.io.rd        := idEx.rd
   regFile.io.writeData := writebackData
   regFile.io.regWrite  := writebackEnable
 
   // ============================================================
-  // 16. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
+  // 18. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
   // ============================================================
   val pcNext = WireDefault(pcReg + 4.U)
   when(stallPipeline) {
     pcNext := pcReg
+  } .elsewhen(clint.io.trap_assert) {
+    pcNext := clint.io.trap_address  // ← page fault ou trap
   } .elsewhen(controlRedirect) {
     pcNext := redirectTarget
   }
@@ -393,6 +450,12 @@ class Pipeline3(
     lwWbValid := true.B
     lwWbRd    := idEx.rd
     lwWbData  := dataMem.io.readData
+    idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+  } .elsewhen(clint.io.trap_assert) {
+    // TRAP (page fault ou exceção): limpa o pipeline
+    lwWbValid := false.B
+    ifIdPc    := pcReg
+    ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .elsewhen(flushPipeline || controlRedirect) {
     // FLUSH: insere NOP no IF/ID e limpa o ID/EX
@@ -424,7 +487,7 @@ class Pipeline3(
   }
 
   // ============================================================
-  // 17. SAÍDAS
+  // 19. SAÍDAS
   // ============================================================
   io.pc              := pcReg
   io.instr           := ifIdInstr
@@ -448,4 +511,15 @@ class Pipeline3(
   io.debug_csrForwarding  := csrForwarding
   io.debug_csr_address_id := csrAddressID
   io.debug_csr_address_ex := csrAddressEX
+
+  // Debug da MMU
+  io.debug_mmu_physical_addr := mmu.io.physical_addr
+  io.debug_mmu_page_fault    := mmu.io.page_fault
+  io.debug_mmu_fault_cause   := mmu.io.fault_cause
+  io.debug_mmu_fault_addr    := mmu.io.fault_addr
+
+  // Debug do Timer
+  io.debug_timer_limit     := timer.io.debug_limit
+  io.debug_timer_enabled   := timer.io.debug_enabled
+  io.debug_timer_interrupt := timer.io.signal_interrupt
 }
