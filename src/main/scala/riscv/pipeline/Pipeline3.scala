@@ -295,6 +295,12 @@ class Pipeline3(
   val mem_addr = Mux(mmu.io.mem_read_en, mmu.io.mem_read_addr, physical_addr)
   dataMem.io.address := mem_addr
 
+  when(idEx.valid && idEx.signals.writebackSel === WritebackSel.MEM) {
+    printf(p"[LW] vaddr=0x${idEx.memAddress}%, paddr=0x${physical_addr}%, " +
+          p"isTimer=${isTimerAddress}%, mmu_fault=${mmu.io.page_fault}%, " +
+          p"memReadEn=${mmu.io.mem_read_en}%\n")
+  }
+
   // Dados lidos retornam para a MMU (page walker)
   mmu.io.mem_read_data := dataMem.io.readData
 
@@ -377,6 +383,11 @@ class Pipeline3(
                          idEx.signals.regWrite && !mmu.io.page_fault) || lwWbValid
   val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
 
+  // when(clint.io.trap_assert) {
+  //   printf(p"[TRAP] assert=1, address=0x${clint.io.trap_address}%, " +
+  //         p"cause=0x${clint.io.trap_cause}%\n")
+  // }
+
   // 15c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
   val csrForwarding = idEx.valid && !idEx.signals.illegal &&
@@ -438,7 +449,7 @@ class Pipeline3(
   when(stallPipeline) {
     pcNext := pcReg
   } .elsewhen(clint.io.trap_assert) {
-    pcNext := clint.io.trap_address  // ← page fault ou trap
+    pcNext := clint.io.redirect_address  // ← page fault ou trap
   } .elsewhen(controlRedirect) {
     pcNext := redirectTarget
   }
@@ -457,6 +468,11 @@ class Pipeline3(
     ifIdPc    := pcReg
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+  } .elsewhen(clint.io.redirect_assert) {
+    // MRET/SRET: redireciona PC, mas NÃO faz flush
+    lwWbValid := false.B
+    ifIdPc    := pcReg
+    ifIdInstr := nop
   } .elsewhen(flushPipeline || controlRedirect) {
     // FLUSH: insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B

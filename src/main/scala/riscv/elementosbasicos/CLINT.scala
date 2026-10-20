@@ -76,6 +76,10 @@ class CLINTInterface extends Bundle {
   val mmu_fault_valid = Input(Bool())
   val mmu_fault_cause = Input(UInt(4.W))
   val mmu_fault_addr  = Input(UInt(32.W))
+
+  // Sinais de redirect (para MRET/SRET)
+  val redirect_assert  = Output(Bool())
+  val redirect_address = Output(UInt(32.W))
 }
 
 class CLINT extends Module {
@@ -162,19 +166,25 @@ class CLINT extends Module {
 
   // 4. TRAP ENTRY - M-MODE
   val trap_assert_internal  = WireDefault(false.B)
-  val trap_address_internal = WireDefault(io.mtvec)
   val trap_cause_internal   = WireDefault(0.U(32.W))
   val trap_to_smode_internal = WireDefault(false.B)
+  val redirect_assert_internal = WireDefault(false.B)
+  val redirect_address_internal = WireDefault(io.mtvec)
+
+  when(io.mmu_fault_valid) {
+    printf(p"[CLINT] mmu_fault_valid=1, cause=0x${io.mmu_fault_cause}%\n")
+  }
   
   when(io.interrupt_flag =/= InterruptCode.None && 
        (interrupt_enable_global_m || interrupt_enable_global_s)) {
     // Interrupção detectada
     trap_assert_internal := true.B
+    redirect_assert_internal := true.B
+    redirect_address_internal := io.mtvec
     trap_to_smode_internal := delegate_to_smode
     
     when(delegate_to_smode) {
       // Trap para S-Mode
-      trap_address_internal := io.stvec
       
       io.sstatus_write_data := Cat(
         io.sstatus(31, 9),
@@ -197,7 +207,6 @@ class CLINT extends Module {
 
     } .otherwise {
       // Trap para M-Mode
-      trap_address_internal := io.mtvec
       
       io.mstatus_write_data := Cat(
         io.mstatus(31, 13),
@@ -225,11 +234,12 @@ class CLINT extends Module {
   
   } .elsewhen(io.valid && (io.instr === ECALL || io.instr === EBREAK)) {
     trap_assert_internal := true.B
+    redirect_assert_internal := true.B
+    redirect_address_internal := io.mtvec
     trap_to_smode_internal := delegate_to_smode
     
     when(delegate_to_smode) {
       // Exceção para S-Mode
-      trap_address_internal := io.stvec
       
       io.sstatus_write_data := Cat(
         io.sstatus(31, 9),
@@ -251,7 +261,6 @@ class CLINT extends Module {
       
     } .otherwise {
       // Exceção para M-Mode
-      trap_address_internal := io.mtvec
       
       io.mstatus_write_data := Cat(
         io.mstatus(31, 13),
@@ -278,8 +287,8 @@ class CLINT extends Module {
   // 6. RETORNO DE TRAP - MRET (M-Mode)
   
   } .elsewhen(io.valid && io.instr === MRET) {
-    trap_assert_internal := true.B
-    trap_address_internal := io.mepc
+    redirect_assert_internal := true.B
+    redirect_address_internal := io.mepc
     
     val mpp = io.mstatus(12, 11)
     
@@ -307,8 +316,8 @@ class CLINT extends Module {
   // 7. RETORNO DE TRAP - SRET (S-Mode)
   
   } .elsewhen(io.valid && io.instr === SRET) {
-    trap_assert_internal := true.B
-    trap_address_internal := io.sepc
+    redirect_assert_internal := true.B
+    redirect_address_internal := io.sepc
     
     val spp = io.sstatus(8)
     
@@ -331,16 +340,17 @@ class CLINT extends Module {
     io.mcause_write_data := io.mcause
     io.direct_write_enable := true.B
     
-  // 8. ESTADO NORMAL
+  // 8. Page fault da MMU
   } .elsewhen(io.mmu_fault_valid) {
-    // Page fault da MMU
     trap_assert_internal := true.B
+    redirect_assert_internal := true.B
+    redirect_address_internal := io.stvec
     
     // Determinar se vai para S-Mode ou M-Mode
     when(current_priv === PrivilegeMode.U || current_priv === PrivilegeMode.S) {
       // Trap para S-Mode (se delegado)
-      when(io.medeleg(io.mmu_fault_cause)) {
-        trap_address_internal := io.stvec
+      val medeleg_lower16 = io.medeleg(15, 0)
+      when(medeleg_lower16(io.mmu_fault_cause)) {
         trap_to_smode_internal := true.B
         
         io.sstatus_write_data := Cat(
@@ -362,7 +372,6 @@ class CLINT extends Module {
         io.mtval_write_data := io.mtval
       } .otherwise {
         // Trap para M-Mode
-        trap_address_internal := io.mtvec
         
         io.mstatus_write_data := Cat(
           io.mstatus(31, 13),
@@ -385,7 +394,6 @@ class CLINT extends Module {
       }
     } .otherwise {
       // Já em M-Mode: trap para M-Mode
-      trap_address_internal := io.mtvec
       
       io.mstatus_write_data := Cat(
         io.mstatus(31, 13),
@@ -409,8 +417,8 @@ class CLINT extends Module {
     io.direct_write_enable := true.B
   } .otherwise {
     trap_assert_internal  := false.B
+    redirect_assert_internal := false.B
     trap_to_smode_internal := false.B
-    trap_address_internal := io.mtvec
     
     io.mstatus_write_data := io.mstatus
     io.mepc_write_data := io.mepc
@@ -427,14 +435,15 @@ class CLINT extends Module {
   // 9. SAÍDAS
   
   io.trap_assert   := trap_assert_internal
-  io.trap_address  := trap_address_internal
   io.trap_cause    := trap_cause_internal
   io.trap_to_smode := trap_to_smode_internal
+  io.redirect_assert := redirect_assert_internal
+  io.redirect_address := redirect_address_internal
   io.debug_trap_assert      := trap_assert_internal
   io.debug_trap_to_smode    := trap_to_smode_internal
   io.debug_delegate_to_smode := delegate_to_smode
   io.debug_exception_code   := exception_code
   io.debug_is_interrupt     := is_interrupt
-  io.debug_trap_address     := trap_address_internal
+  io.debug_trap_address     := redirect_address_internal
   io.debug_direct_write_enable := io.direct_write_enable
 }
