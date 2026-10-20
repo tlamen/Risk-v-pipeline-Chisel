@@ -27,6 +27,8 @@ class InstructionMemory(
 
   private val wordIndex = io.address(log2Ceil(depthWords) + 1, 2)
 
+  // printf(p"[INSTRMEM] addr=0x${io.address}%, wordIndex=${wordIndex}%, data=0x${io.readData}%\n")
+
   if (programFile.nonEmpty) {
     val mem = Mem(depthWords, UInt(32.W))
     loadMemoryFromFileInline(mem, programFile)

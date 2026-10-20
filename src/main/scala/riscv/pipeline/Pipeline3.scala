@@ -162,9 +162,17 @@ class Pipeline3(
     interrupt_flag := InterruptCode.Timer0
   }
 
+  val trapPending = RegInit(0.U(2.W))  // 2 bits para contar 2 ciclos
+
+  when(clint.io.trap_assert) {
+    trapPending := 2.U
+  } .elsewhen(trapPending > 0.U) {
+    trapPending := trapPending - 1.U
+  }
+
   clint.io.pc             := pcReg
   clint.io.instr          := ifIdInstr
-  clint.io.valid          := !stallPipeline && !flushPipeline
+  clint.io.valid          := !stallPipeline && !flushPipeline && (trapPending === 0.U)
   clint.io.interrupt_flag := interrupt_flag
 
   // ============================================================
@@ -295,11 +303,27 @@ class Pipeline3(
   val mem_addr = Mux(mmu.io.mem_read_en, mmu.io.mem_read_addr, physical_addr)
   dataMem.io.address := mem_addr
 
-  when(idEx.valid && idEx.signals.writebackSel === WritebackSel.MEM) {
-    printf(p"[LW] vaddr=0x${idEx.memAddress}%, paddr=0x${physical_addr}%, " +
-          p"isTimer=${isTimerAddress}%, mmu_fault=${mmu.io.page_fault}%, " +
-          p"memReadEn=${mmu.io.mem_read_en}%\n")
-  }
+  // when(idEx.valid && idEx.signals.writebackSel === WritebackSel.MEM) {
+  //   printf(p"[LW] vaddr=0x${idEx.memAddress}%, paddr=0x${physical_addr}%, " +
+  //         p"isTimer=${isTimerAddress}%, mmu_fault=${mmu.io.page_fault}%, " +
+  //         p"memReadEn=${mmu.io.mem_read_en}%\n")
+  // }
+
+  // when(idEx.valid && idEx.signals.csrWrite && idEx.csrAddress === 0x305.U) {
+  //   printf(p"[MTVEC] write data=0x${idEx.csrWriteData}%\n")
+  // }
+
+  // when(clint.io.trap_assert) {
+  //   printf(p"[TRAP] assert=1, pc=0x${pcReg}%, instr=0x${ifIdInstr}%\n")
+  // }
+
+  // when(clint.io.redirect_assert) {
+  //   printf(p"[REDIRECT] addr=0x${clint.io.redirect_address}%, pc=0x${pcReg}%, instr=0x${ifIdInstr}%\n")
+  // }
+
+  // printf(p"[PIPELINE] pc=0x${pcReg}%, ifIdInstr=0x${ifIdInstr}%, " +
+  //      p"idEx.valid=${idEx.valid}%, stall=${stallPipeline}%, " +
+  //      p"trapPending=${trapPending}%\n")
 
   // Dados lidos retornam para a MMU (page walker)
   mmu.io.mem_read_data := dataMem.io.readData
@@ -448,33 +472,40 @@ class Pipeline3(
   val pcNext = WireDefault(pcReg + 4.U)
   when(stallPipeline) {
     pcNext := pcReg
-  } .elsewhen(clint.io.trap_assert) {
+  } .elsewhen(clint.io.redirect_assert) {
     pcNext := clint.io.redirect_address  // ← page fault ou trap
   } .elsewhen(controlRedirect) {
     pcNext := redirectTarget
   }
 
+  when(pcReg === 0.U) {
+    initialProgram.zipWithIndex.foreach { case (instr, idx) =>
+      printf(p"[INIT] idx=${idx}%, instr=0x${instr.U}%\n")
+    }
+  }
+
   pcReg := pcNext
 
   when(stallPipeline) {
-    // STALL: IF/ID congelados, lw avança para o registrador de WB
+    // STALL
     lwWbValid := true.B
     lwWbRd    := idEx.rd
     lwWbData  := dataMem.io.readData
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .elsewhen(clint.io.trap_assert) {
-    // TRAP (page fault ou exceção): limpa o pipeline
+    // TRAP: limpa o pipeline
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .elsewhen(clint.io.redirect_assert) {
-    // MRET/SRET: redireciona PC, mas NÃO faz flush
+    // MRET/SRET: redireciona PC, mas NÃO faz flush do idEx
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop
+    // NÃO limpa o idEx (a instrução MRET/SRET ainda está no EX)
   } .elsewhen(flushPipeline || controlRedirect) {
-    // FLUSH: insere NOP no IF/ID e limpa o ID/EX
+    // FLUSH
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop

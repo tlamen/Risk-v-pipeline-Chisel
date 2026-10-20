@@ -171,8 +171,8 @@ class CLINT extends Module {
   val redirect_assert_internal = WireDefault(false.B)
   val redirect_address_internal = WireDefault(io.mtvec)
 
-  when(io.mmu_fault_valid) {
-    printf(p"[CLINT] mmu_fault_valid=1, cause=0x${io.mmu_fault_cause}%\n")
+  when(io.valid && io.instr === ECALL) {
+    printf(p"[ECALL] detected, pc=0x${io.pc}%\n")
   }
   
   when(io.interrupt_flag =/= InterruptCode.None && 
