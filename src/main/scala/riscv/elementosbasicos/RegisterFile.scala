@@ -20,6 +20,8 @@ class RegisterFile extends Module {
 
     val readData1 = Output(UInt(32.W))
     val readData2 = Output(UInt(32.W))
+
+    val debug_regs = Output(Vec(32, UInt(32.W)))
   })
 
   // 32 registradores de 32 bits inicializados em zero.
@@ -33,4 +35,8 @@ class RegisterFile extends Module {
   // Leitura combinacional com regra de x0 fixo em zero.
   io.readData1 := Mux(io.rs1 === 0.U, 0.U, regs(io.rs1))
   io.readData2 := Mux(io.rs2 === 0.U, 0.U, regs(io.rs2))
+
+  for (i <- 0 until 32) {
+    io.debug_regs(i) := regs(i)
+  }
 }

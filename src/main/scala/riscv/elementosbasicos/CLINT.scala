@@ -171,13 +171,11 @@ class CLINT extends Module {
   val redirect_assert_internal = WireDefault(false.B)
   val redirect_address_internal = WireDefault(io.mtvec)
 
-  when(io.valid && io.instr === ECALL) {
-    printf(p"[ECALL] detected, pc=0x${io.pc}%\n")
-  }
   
   when(io.interrupt_flag =/= InterruptCode.None && 
        (interrupt_enable_global_m || interrupt_enable_global_s)) {
     // Interrupção detectada
+    printf("interrupcao detectada\n")
     trap_assert_internal := true.B
     redirect_assert_internal := true.B
     redirect_address_internal := io.mtvec
@@ -233,6 +231,7 @@ class CLINT extends Module {
   // 5. EXCEÇÃO (ECALL/EBREAK)
   
   } .elsewhen(io.valid && (io.instr === ECALL || io.instr === EBREAK)) {
+    printf("ecall/ebreak\n")
     trap_assert_internal := true.B
     redirect_assert_internal := true.B
     redirect_address_internal := io.mtvec
@@ -282,11 +281,10 @@ class CLINT extends Module {
     }
     
     io.direct_write_enable := true.B
-    
-  
-  // 6. RETORNO DE TRAP - MRET (M-Mode)
-  
+
+  // 6. RETORNO DE TRAP - MRET (M-Mode)  
   } .elsewhen(io.valid && io.instr === MRET) {
+    printf("retorno do trap - MRET\n")
     redirect_assert_internal := true.B
     redirect_address_internal := io.mepc
     
@@ -316,6 +314,7 @@ class CLINT extends Module {
   // 7. RETORNO DE TRAP - SRET (S-Mode)
   
   } .elsewhen(io.valid && io.instr === SRET) {
+    printf("retorno do trap - SRET\n")
     redirect_assert_internal := true.B
     redirect_address_internal := io.sepc
     
@@ -343,6 +342,7 @@ class CLINT extends Module {
   // 8. Page fault da MMU
   } .elsewhen(io.mmu_fault_valid) {
     trap_assert_internal := true.B
+    printf("page fault da mmu\n")
     redirect_assert_internal := true.B
     redirect_address_internal := io.stvec
     
@@ -416,6 +416,7 @@ class CLINT extends Module {
     
     io.direct_write_enable := true.B
   } .otherwise {
+    printf("otherwise\n")
     trap_assert_internal  := false.B
     redirect_assert_internal := false.B
     trap_to_smode_internal := false.B
@@ -433,7 +434,6 @@ class CLINT extends Module {
   
   
   // 9. SAÍDAS
-  
   io.trap_assert   := trap_assert_internal
   io.trap_cause    := trap_cause_internal
   io.trap_to_smode := trap_to_smode_internal

@@ -189,7 +189,10 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
   // TESTE 3: mstatus.MIE desabilitado durante handler
   // ============================================================
   it should "desabilitar MIE durante handler e restaurar após MRET" in {
-    print("teste 1 com erro aqui")
+    println("\n" + "=" * 100)
+    println("TESTE 3: desabilitar MIE durante handler e restaurar após MRET")
+    println("=" * 100)
+
     val program = Seq(
       addi(1, 0, 8),          // 0x00: x1 = 8 (bit MIE)
       csrrs(0, 0x300, 1),     // 0x04: mstatus |= 8 (MIE=1)
@@ -210,21 +213,60 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       val x5 = new WritebackTracker
       val x6 = new WritebackTracker
 
-      for (_ <- 0 until 60) {
-        if (dut.io.writebackEnable.peekBoolean()) {
-          val rd = dut.io.writebackRd.peekInt().toInt
-          val data = dut.io.writebackData.peekInt()
+      // Cabeçalho do log
+      println(f"${"CICLO"}%5s | ${"PC"}%6s | ${"INSTR"}%10s | ${"WB"}%5s | " +
+              f"${"rd"}%3s | ${"data"}%10s | ${"x1"}%4s | ${"x2"}%4s | " +
+              f"${"x3"}%4s | ${"x5"}%4s | ${"x6"}%4s | ${"mstatus"}%10s | " +
+              f"${"stall"}%5s | ${"trapP"}%5s")
+      println("-" * 100)
 
-          rd match {
-            case 3 => x3.capturar(data)
-            case 5 => x5.capturar(data)
-            case 6 => x6.capturar(data)
+      for (ciclo <- 0 until 60) {
+        val pc       = dut.io.pc.peekInt()
+        val instr    = dut.io.instr.peekInt()
+        val wbEnable = dut.io.writebackEnable.peekBoolean()
+        val wbRd     = dut.io.writebackRd.peekInt().toInt
+        val wbData   = dut.io.writebackData.peekInt()
+
+        val x1 = dut.io.debug_regs(1).peekInt()
+        val x2 = dut.io.debug_regs(2).peekInt()
+        val x3_val = dut.io.debug_regs(3).peekInt()
+        val x5_val = dut.io.debug_regs(5).peekInt()
+        val x6_val = dut.io.debug_regs(6).peekInt()
+        val mstatus = dut.io.debug_csr_mstatus.peekInt()
+
+        val stall    = dut.io.stalled.peekBoolean()
+        val trapPend = dut.io.debug_trap_pending.peekInt()
+
+        // Formata o writeback
+        val wbStr = if (wbEnable) f"SIM  " else f"nao  "
+        val rdStr = if (wbEnable) f"$wbRd%3d" else "   "
+        val dataStr = if (wbEnable) f"0x$wbData%08x" else "          "
+
+        println(f"$ciclo%5d | 0x$pc%04x | 0x$instr%08x | $wbStr | " +
+                f"$rdStr | $dataStr | 0x$x1%02x | 0x$x2%02x | " +
+                f"0x$x3_val%02x | 0x$x5_val%02x | 0x$x6_val%02x | 0x$mstatus%08x | " +
+                f"$stall%5s | $trapPend%5d")
+
+        // Captura os writebacks
+        if (wbEnable) {
+          wbRd match {
+            case 3 => x3.capturar(wbData)
+            case 5 => x5.capturar(wbData)
+            case 6 => x6.capturar(wbData)
             case _ =>
           }
         }
+
         dut.clock.step(1)
       }
 
+      println("-" * 100)
+      println(s"RESULTADO: x3=${if (x3.capturado) x3.valor else "N/A"}, " +
+              s"x5=${if (x5.capturado) x5.valor else "N/A"}, " +
+              s"x6=${if (x6.capturado) x6.valor else "N/A"}")
+      println("=" * 100 + "\n")
+
+      // Asserts
       assert(x5.capturado, "x5 não foi escrito (handler)")
       assert(x5.valor == BigInt(5),
         s"x5 esperado 5, obtido $x5.valor")
@@ -244,7 +286,10 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
   // TESTE 4: mstatus.MPIE salva MIE antes do trap
   // ============================================================
   it should "salvar MIE em MPIE no trap entry" in {
-    print("teste 2 com erro aqui")
+    println("\n" + "=" * 100)
+    println("TESTE 4: salvar MIE em MPIE no trap entry")
+    println("=" * 100)
+
     val program = Seq(
       addi(1, 0, 8),          // 0x00
       csrrs(0, 0x300, 1),     // 0x04: mstatus |= 8 (MIE=1)
@@ -263,18 +308,48 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
     test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
       val x6 = new WritebackTracker
 
-      for (_ <- 0 until 60) {
-        if (dut.io.writebackEnable.peekBoolean()) {
-          val rd = dut.io.writebackRd.peekInt().toInt
-          val data = dut.io.writebackData.peekInt()
+      // Cabeçalho do log
+      println(f"${"CICLO"}%5s | ${"PC"}%6s | ${"INSTR"}%10s | ${"WB"}%5s | " +
+              f"${"rd"}%3s | ${"data"}%10s | ${"x6"}%4s | ${"mstatus"}%10s | " +
+              f"${"MPIE"}%4s | ${"stall"}%5s | ${"trapP"}%5s")
+      println("-" * 100)
 
-          rd match {
-            case 6 => x6.capturar(data)
+      for (ciclo <- 0 until 60) {
+        val pc       = dut.io.pc.peekInt()
+        val instr    = dut.io.instr.peekInt()
+        val wbEnable = dut.io.writebackEnable.peekBoolean()
+        val wbRd     = dut.io.writebackRd.peekInt().toInt
+        val wbData   = dut.io.writebackData.peekInt()
+
+        val x6_val = dut.io.debug_regs(6).peekInt()
+        val mstatus = dut.io.debug_csr_mstatus.peekInt()
+        val mpie = (mstatus >> 7) & 1
+
+        val stall    = dut.io.stalled.peekBoolean()
+        val trapPend = dut.io.debug_trap_pending.peekInt()
+
+        // Formata o writeback
+        val wbStr = if (wbEnable) f"SIM  " else f"nao  "
+        val rdStr = if (wbEnable) f"$wbRd%3d" else "   "
+        val dataStr = if (wbEnable) f"0x$wbData%08x" else "          "
+
+        println(f"$ciclo%5d | 0x$pc%04x | 0x$instr%08x | $wbStr | " +
+                f"$rdStr | $dataStr | 0x$x6_val%02x | 0x$mstatus%08x | " +
+                f"$mpie%4d | $stall%5s | $trapPend%5d")
+
+        if (wbEnable) {
+          wbRd match {
+            case 6 => x6.capturar(wbData)
             case _ =>
           }
         }
+
         dut.clock.step(1)
       }
+
+      println("-" * 100)
+      println(s"RESULTADO: x6=${if (x6.capturado) x6.valor else "N/A"}")
+      println("=" * 100 + "\n")
 
       assert(x6.capturado, "x6 não foi escrito (leitura de mstatus)")
       val mpie = (x6.valor >> 7) & 1

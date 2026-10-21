@@ -80,6 +80,11 @@ class Pipeline3(
     val debug_timer_limit     = Output(UInt(32.W))
     val debug_timer_enabled   = Output(Bool())
     val debug_timer_interrupt = Output(Bool())
+
+    val debug_regs = Output(Vec(32, UInt(32.W)))
+    val debug_mem = Output(Vec(64, UInt(32.W)))
+    val debug_csr_mstatus = Output(UInt(32.W))
+    val debug_trap_pending = Output(UInt(2.W))
   })
 
   import RV32I._
@@ -453,6 +458,10 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
+  printf(p"[CLINT] direct_write_enable=${clint.io.direct_write_enable}%, " +
+          p"trap_assert=${clint.io.trap_assert}%, " +
+          p"mmu_fault=${clint.io.mmu_fault_valid}%\n")
+
   csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal &&
                               idEx.signals.csrWrite &&
                               !clint.io.direct_write_enable
@@ -470,19 +479,24 @@ class Pipeline3(
   // 18. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
   // ============================================================
   val pcNext = WireDefault(pcReg + 4.U)
+
   when(stallPipeline) {
     pcNext := pcReg
   } .elsewhen(clint.io.redirect_assert) {
+    print("TEM QUE ENTRAR AQUI\n")
     pcNext := clint.io.redirect_address  // ← page fault ou trap
   } .elsewhen(controlRedirect) {
+    printf("entrou aqui??????\n")
     pcNext := redirectTarget
   }
 
-  when(pcReg === 0.U) {
-    initialProgram.zipWithIndex.foreach { case (instr, idx) =>
-      printf(p"[INIT] idx=${idx}%, instr=0x${instr.U}%\n")
-    }
-  }
+  print(f"$pcNext")
+
+  // when(pcReg === 0.U) {
+  //   initialProgram.zipWithIndex.foreach { case (instr, idx) =>
+  //     printf(p"[INIT] idx=${idx}%, instr=0x${instr.U}%\n")
+  //   }
+  // }
 
   pcReg := pcNext
 
@@ -500,6 +514,7 @@ class Pipeline3(
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .elsewhen(clint.io.redirect_assert) {
     // MRET/SRET: redireciona PC, mas NÃO faz flush do idEx
+    printf("AQUI TAMBEM\n")
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop
@@ -536,6 +551,14 @@ class Pipeline3(
   // ============================================================
   // 19. SAÍDAS
   // ============================================================
+  for (i <- 0 until 32) {
+    io.debug_regs(i) := regFile.io.debug_regs(i)
+  }
+
+  for (i <- 0 until 64) {
+    io.debug_mem(i) := dataMem.io.debug_mem(i)  // ← precisa expor no DataMemory
+  }
+
   io.pc              := pcReg
   io.instr           := ifIdInstr
   io.aluResult       := ula.io.result
@@ -569,4 +592,7 @@ class Pipeline3(
   io.debug_timer_limit     := timer.io.debug_limit
   io.debug_timer_enabled   := timer.io.debug_enabled
   io.debug_timer_interrupt := timer.io.signal_interrupt
+
+  io.debug_csr_mstatus := csr.io.mstatus_read
+  io.debug_trap_pending := trapPending
 }

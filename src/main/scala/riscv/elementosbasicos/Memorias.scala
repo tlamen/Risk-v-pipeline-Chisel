@@ -59,6 +59,8 @@ class DataMemory(depthWords: Int = 1024) extends Module {
     val memSize = Input(UInt(2.W))
     val unsignedLoad = Input(Bool())
     val readData = Output(UInt(32.W))
+
+    val debug_mem = Output(Vec(64, UInt(32.W)))
   })
 
   import RV32I.MemorySize
@@ -116,5 +118,14 @@ class DataMemory(depthWords: Int = 1024) extends Module {
         mem(byteAddress + 3.U) := io.writeData(31, 24)
       }
     }
+  }
+
+  for (i <- 0 until 64) {
+    io.debug_mem(i) := Cat(
+      mem(i * 4 + 3),
+      mem(i * 4 + 2),
+      mem(i * 4 + 1),
+      mem(i * 4)
+    )
   }
 }
