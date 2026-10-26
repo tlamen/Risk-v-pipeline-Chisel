@@ -460,7 +460,13 @@ class Pipeline3(
 
   printf(p"[CLINT] direct_write_enable=${clint.io.direct_write_enable}%, " +
           p"trap_assert=${clint.io.trap_assert}%, " +
+          p"redirect address=${clint.io.redirect_address}%, " +
           p"mmu_fault=${clint.io.mmu_fault_valid}%\n")
+
+  printf(p"[WRITE_ENABLE] idEx.valid=${idEx.valid}%, " +
+          p"illegal=${idEx.signals.illegal}%, " +
+          p"csrWrite=${idEx.signals.csrWrite}%, " +
+          p"direct_write_enable=${clint.io.direct_write_enable}%\n")
 
   csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal &&
                               idEx.signals.csrWrite &&

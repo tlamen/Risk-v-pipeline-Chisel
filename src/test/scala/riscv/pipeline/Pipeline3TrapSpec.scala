@@ -198,6 +198,8 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       csrrs(0, 0x300, 1),     // 0x04: mstatus |= 8 (MIE=1)
       addi(2, 0, 0x20),       // 0x08
       csrrw(0, 0x305, 2),     // 0x0C: mtvec = 0x20
+      NOP,
+      NOP,
       ECALL,                  // 0x10
       addi(3, 0, 1),          // 0x14
       NOP,                    // 0x18
