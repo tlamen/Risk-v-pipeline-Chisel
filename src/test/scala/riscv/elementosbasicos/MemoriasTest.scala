@@ -9,7 +9,7 @@ class MemoriasTest extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "DataMemory"
 
   it should "escrever e ler uma palavra de 32 bits" in {
-    test(new DataMemory(depthWords = 16)) { dut =>
+    test(new DataMemory(depthWords = 256)) { dut =>
       dut.io.address.poke(8.U(32.W)) // palavra de indice 2
       dut.io.writeData.poke("hDEADBEEF".U(32.W))
       dut.io.memSize.poke(RV32I.MemorySize.WORD)
@@ -26,7 +26,7 @@ class MemoriasTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "aplicar tamanho e extensao de sinal em byte e halfword" in {
-    test(new DataMemory(depthWords = 16)) { dut =>
+    test(new DataMemory(depthWords = 256)) { dut =>
       dut.io.address.poke(0.U(32.W))
       dut.io.writeData.poke("h00000080".U(32.W))
       dut.io.memSize.poke(RV32I.MemorySize.BYTE)

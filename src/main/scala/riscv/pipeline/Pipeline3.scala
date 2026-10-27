@@ -308,28 +308,6 @@ class Pipeline3(
   val mem_addr = Mux(mmu.io.mem_read_en, mmu.io.mem_read_addr, physical_addr)
   dataMem.io.address := mem_addr
 
-  // when(idEx.valid && idEx.signals.writebackSel === WritebackSel.MEM) {
-  //   printf(p"[LW] vaddr=0x${idEx.memAddress}%, paddr=0x${physical_addr}%, " +
-  //         p"isTimer=${isTimerAddress}%, mmu_fault=${mmu.io.page_fault}%, " +
-  //         p"memReadEn=${mmu.io.mem_read_en}%\n")
-  // }
-
-  // when(idEx.valid && idEx.signals.csrWrite && idEx.csrAddress === 0x305.U) {
-  //   printf(p"[MTVEC] write data=0x${idEx.csrWriteData}%\n")
-  // }
-
-  // when(clint.io.trap_assert) {
-  //   printf(p"[TRAP] assert=1, pc=0x${pcReg}%, instr=0x${ifIdInstr}%\n")
-  // }
-
-  // when(clint.io.redirect_assert) {
-  //   printf(p"[REDIRECT] addr=0x${clint.io.redirect_address}%, pc=0x${pcReg}%, instr=0x${ifIdInstr}%\n")
-  // }
-
-  // printf(p"[PIPELINE] pc=0x${pcReg}%, ifIdInstr=0x${ifIdInstr}%, " +
-  //      p"idEx.valid=${idEx.valid}%, stall=${stallPipeline}%, " +
-  //      p"trapPending=${trapPending}%\n")
-
   // Dados lidos retornam para a MMU (page walker)
   mmu.io.mem_read_data := dataMem.io.readData
 
@@ -412,11 +390,6 @@ class Pipeline3(
                          idEx.signals.regWrite && !mmu.io.page_fault) || lwWbValid
   val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
 
-  // when(clint.io.trap_assert) {
-  //   printf(p"[TRAP] assert=1, address=0x${clint.io.trap_address}%, " +
-  //         p"cause=0x${clint.io.trap_cause}%\n")
-  // }
-
   // 15c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
   val csrForwarding = idEx.valid && !idEx.signals.illegal &&
@@ -458,19 +431,8 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
-  printf(p"[CLINT] direct_write_enable=${clint.io.direct_write_enable}%, " +
-          p"trap_assert=${clint.io.trap_assert}%, " +
-          p"redirect address=${clint.io.redirect_address}%, " +
-          p"mmu_fault=${clint.io.mmu_fault_valid}%\n")
-
-  printf(p"[WRITE_ENABLE] idEx.valid=${idEx.valid}%, " +
-          p"illegal=${idEx.signals.illegal}%, " +
-          p"csrWrite=${idEx.signals.csrWrite}%, " +
-          p"direct_write_enable=${clint.io.direct_write_enable}%\n")
-
   csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal &&
-                              idEx.signals.csrWrite &&
-                              !clint.io.direct_write_enable
+                              idEx.signals.csrWrite
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data    := idEx.csrWriteData
 
@@ -489,20 +451,10 @@ class Pipeline3(
   when(stallPipeline) {
     pcNext := pcReg
   } .elsewhen(clint.io.redirect_assert) {
-    print("TEM QUE ENTRAR AQUI\n")
     pcNext := clint.io.redirect_address  // ← page fault ou trap
   } .elsewhen(controlRedirect) {
-    printf("entrou aqui??????\n")
     pcNext := redirectTarget
   }
-
-  print(f"$pcNext")
-
-  // when(pcReg === 0.U) {
-  //   initialProgram.zipWithIndex.foreach { case (instr, idx) =>
-  //     printf(p"[INIT] idx=${idx}%, instr=0x${instr.U}%\n")
-  //   }
-  // }
 
   pcReg := pcNext
 
@@ -520,7 +472,6 @@ class Pipeline3(
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .elsewhen(clint.io.redirect_assert) {
     // MRET/SRET: redireciona PC, mas NÃO faz flush do idEx
-    printf("AQUI TAMBEM\n")
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop

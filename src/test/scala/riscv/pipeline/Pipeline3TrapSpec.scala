@@ -99,7 +99,7 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x0C
     )
 
-    test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
+    test(new Pipeline3(initialProgram = program, memoryWords = 256)) { dut =>
       val x1 = new WritebackTracker
       val x2 = new WritebackTracker
       val x3 = new WritebackTracker
@@ -189,10 +189,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
   // TESTE 3: mstatus.MIE desabilitado durante handler
   // ============================================================
   it should "desabilitar MIE durante handler e restaurar após MRET" in {
-    println("\n" + "=" * 100)
-    println("TESTE 3: desabilitar MIE durante handler e restaurar após MRET")
-    println("=" * 100)
-
     val program = Seq(
       addi(1, 0, 8),          // 0x00: x1 = 8 (bit MIE)
       csrrs(0, 0x300, 1),     // 0x04: mstatus |= 8 (MIE=1)
@@ -214,13 +210,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       val x3 = new WritebackTracker
       val x5 = new WritebackTracker
       val x6 = new WritebackTracker
-
-      // Cabeçalho do log
-      println(f"${"CICLO"}%5s | ${"PC"}%6s | ${"INSTR"}%10s | ${"WB"}%5s | " +
-              f"${"rd"}%3s | ${"data"}%10s | ${"x1"}%4s | ${"x2"}%4s | " +
-              f"${"x3"}%4s | ${"x5"}%4s | ${"x6"}%4s | ${"mstatus"}%10s | " +
-              f"${"stall"}%5s | ${"trapP"}%5s")
-      println("-" * 100)
 
       for (ciclo <- 0 until 60) {
         val pc       = dut.io.pc.peekInt()
@@ -244,11 +233,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
         val rdStr = if (wbEnable) f"$wbRd%3d" else "   "
         val dataStr = if (wbEnable) f"0x$wbData%08x" else "          "
 
-        println(f"$ciclo%5d | 0x$pc%04x | 0x$instr%08x | $wbStr | " +
-                f"$rdStr | $dataStr | 0x$x1%02x | 0x$x2%02x | " +
-                f"0x$x3_val%02x | 0x$x5_val%02x | 0x$x6_val%02x | 0x$mstatus%08x | " +
-                f"$stall%5s | $trapPend%5d")
-
         // Captura os writebacks
         if (wbEnable) {
           wbRd match {
@@ -261,12 +245,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
 
         dut.clock.step(1)
       }
-
-      println("-" * 100)
-      println(s"RESULTADO: x3=${if (x3.capturado) x3.valor else "N/A"}, " +
-              s"x5=${if (x5.capturado) x5.valor else "N/A"}, " +
-              s"x6=${if (x6.capturado) x6.valor else "N/A"}")
-      println("=" * 100 + "\n")
 
       // Asserts
       assert(x5.capturado, "x5 não foi escrito (handler)")
@@ -288,15 +266,13 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
   // TESTE 4: mstatus.MPIE salva MIE antes do trap
   // ============================================================
   it should "salvar MIE em MPIE no trap entry" in {
-    println("\n" + "=" * 100)
-    println("TESTE 4: salvar MIE em MPIE no trap entry")
-    println("=" * 100)
-
     val program = Seq(
       addi(1, 0, 8),          // 0x00
       csrrs(0, 0x300, 1),     // 0x04: mstatus |= 8 (MIE=1)
       addi(2, 0, 0x20),       // 0x08
       csrrw(0, 0x305, 2),     // 0x0C: mtvec = 0x20
+      NOP,
+      NOP,
       ECALL,                  // 0x10
       addi(3, 0, 1),          // 0x14
       NOP,                    // 0x18
@@ -309,12 +285,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
 
     test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
       val x6 = new WritebackTracker
-
-      // Cabeçalho do log
-      println(f"${"CICLO"}%5s | ${"PC"}%6s | ${"INSTR"}%10s | ${"WB"}%5s | " +
-              f"${"rd"}%3s | ${"data"}%10s | ${"x6"}%4s | ${"mstatus"}%10s | " +
-              f"${"MPIE"}%4s | ${"stall"}%5s | ${"trapP"}%5s")
-      println("-" * 100)
 
       for (ciclo <- 0 until 60) {
         val pc       = dut.io.pc.peekInt()
@@ -335,10 +305,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
         val rdStr = if (wbEnable) f"$wbRd%3d" else "   "
         val dataStr = if (wbEnable) f"0x$wbData%08x" else "          "
 
-        println(f"$ciclo%5d | 0x$pc%04x | 0x$instr%08x | $wbStr | " +
-                f"$rdStr | $dataStr | 0x$x6_val%02x | 0x$mstatus%08x | " +
-                f"$mpie%4d | $stall%5s | $trapPend%5d")
-
         if (wbEnable) {
           wbRd match {
             case 6 => x6.capturar(wbData)
@@ -349,10 +315,6 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
         dut.clock.step(1)
       }
 
-      println("-" * 100)
-      println(s"RESULTADO: x6=${if (x6.capturado) x6.valor else "N/A"}")
-      println("=" * 100 + "\n")
-
       assert(x6.capturado, "x6 não foi escrito (leitura de mstatus)")
       val mpie = (x6.valor >> 7) & 1
       assert(mpie == 1,
@@ -360,145 +322,145 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  // // ============================================================
-  // // TESTE 5: Leitura de CSR após escrita
-  // // ============================================================
-  // it should "ler mtvec após escrever" in {
-  //   val program = Seq(
-  //     addi(1, 0, 0x7FF),  // x1 = 0x7FF (2047)
-  //     csrrw(0, 0x305, 1), // mtvec = 0x7FF
-  //     csrrs(2, 0x305, 0), // x2 = mtvec = 0x7FF)
-  //     NOP,                    // 0x0C
-  //   )
+  // ============================================================
+  // TESTE 5: Leitura de CSR após escrita
+  // ============================================================
+  it should "ler mtvec após escrever" in {
+    val program = Seq(
+      addi(1, 0, 0x7FF),  // x1 = 0x7FF (2047)
+      csrrw(0, 0x305, 1), // mtvec = 0x7FF
+      csrrs(2, 0x305, 0), // x2 = mtvec = 0x7FF)
+      NOP,                    // 0x0C
+    )
 
-  //   test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
-  //     val x2 = new WritebackTracker
+    test(new Pipeline3(initialProgram = program, memoryWords = 256)) { dut =>
+      val x2 = new WritebackTracker
 
-  //     for (_ <- 0 until 20) {
-  //       if (dut.io.writebackEnable.peekBoolean()) {
-  //         val rd = dut.io.writebackRd.peekInt().toInt
-  //         val data = dut.io.writebackData.peekInt()
+      for (_ <- 0 until 20) {
+        if (dut.io.writebackEnable.peekBoolean()) {
+          val rd = dut.io.writebackRd.peekInt().toInt
+          val data = dut.io.writebackData.peekInt()
 
-  //         rd match {
-  //           case 2 => x2.capturar(data)
-  //           case _ =>
-  //         }
-  //       }
-  //       dut.clock.step(1)
-  //     }
+          rd match {
+            case 2 => x2.capturar(data)
+            case _ =>
+          }
+        }
+        dut.clock.step(1)
+      }
 
-  //     assert(x2.capturado, "x2 não foi escrito")
-  //     assert(x2.valor == BigInt(0x7FF),
-  //       s"x2 esperado 0xABCD, obtido 0x${x2.valor.toString(16)}")
-  //   }
-  // }
+      assert(x2.capturado, "x2 não foi escrito")
+      assert(x2.valor == BigInt(0x7FF),
+        s"x2 esperado 0xABCD, obtido 0x${x2.valor.toString(16)}")
+    }
+  }
 
-  // // ============================================================
-  // // TESTE 6: EBREAK gera trap
-  // // ============================================================
-  // it should "gerar trap em EBREAK" in {
-  //   val program = Seq(
-  //     addi(2, 0, 0x20),       // 0x00
-  //     csrrw(0, 0x305, 2),     // 0x04: mtvec = 0x20
-  //     addi(1, 0, 55),         // 0x08
-  //     EBREAK,                 // 0x0C
-  //     addi(3, 0, 1),          // 0x10
-  //     NOP,                    // 0x14
-  //     NOP,                    // 0x18
-  //     NOP,                    // 0x1C
-  //     addi(5, 0, 5),          // 0x20: handler
-  //     MRET,                   // 0x24
-  //     NOP,                    // 0x28
-  //   )
+  // ============================================================
+  // TESTE 6: EBREAK gera trap
+  // ============================================================
+  it should "gerar trap em EBREAK" in {
+    val program = Seq(
+      addi(2, 0, 0x20),       // 0x00
+      csrrw(0, 0x305, 2),     // 0x04: mtvec = 0x20
+      addi(1, 0, 55),         // 0x08
+      EBREAK,                 // 0x0C
+      addi(3, 0, 1),          // 0x10
+      NOP,                    // 0x14
+      NOP,                    // 0x18
+      NOP,                    // 0x1C
+      addi(5, 0, 5),          // 0x20: handler
+      MRET,                   // 0x24
+      NOP,                    // 0x28
+    )
 
-  //   test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
-  //     val x3 = new WritebackTracker
-  //     val x5 = new WritebackTracker
+    test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
+      val x3 = new WritebackTracker
+      val x5 = new WritebackTracker
 
-  //     for (_ <- 0 until 50) {
-  //       if (dut.io.writebackEnable.peekBoolean()) {
-  //         val rd = dut.io.writebackRd.peekInt().toInt
-  //         val data = dut.io.writebackData.peekInt()
+      for (_ <- 0 until 50) {
+        if (dut.io.writebackEnable.peekBoolean()) {
+          val rd = dut.io.writebackRd.peekInt().toInt
+          val data = dut.io.writebackData.peekInt()
 
-  //         rd match {
-  //           case 3 => x3.capturar(data)
-  //           case 5 => x5.capturar(data)
-  //           case _ =>
-  //         }
-  //       }
-  //       dut.clock.step(1)
-  //     }
+          rd match {
+            case 3 => x3.capturar(data)
+            case 5 => x5.capturar(data)
+            case _ =>
+          }
+        }
+        dut.clock.step(1)
+      }
 
-  //     assert(x5.capturado, "x5 não foi escrito (handler)")
-  //     assert(x5.valor == BigInt(5),
-  //       s"x5 esperado 5, obtido $x5.valor")
+      assert(x5.capturado, "x5 não foi escrito (handler)")
+      assert(x5.valor == BigInt(5),
+        s"x5 esperado 5, obtido $x5.valor")
 
-  //     assert(x3.capturado, "x3 não foi escrito (após MRET)")
-  //     assert(x3.valor == BigInt(1),
-  //       s"x3 esperado 1, obtido $x3.valor")
-  //   }
-  // }
+      assert(x3.capturado, "x3 não foi escrito (após MRET)")
+      assert(x3.valor == BigInt(1),
+        s"x3 esperado 1, obtido $x3.valor")
+    }
+  }
 
-  // // ============================================================
-  // // TESTE 7: PC avança normalmente sem trap
-  // // ============================================================
-  // it should "avançar PC normalmente sem traps" in {
-  //   val program = Seq(
-  //     addi(1, 0, 1),          // 0x00
-  //     addi(2, 0, 2),          // 0x04
-  //     addi(3, 0, 3),          // 0x08
-  //     addi(4, 0, 4),          // 0x0C
-  //     NOP,                    // 0x10
-  //   )
+  // ============================================================
+  // TESTE 7: PC avança normalmente sem trap
+  // ============================================================
+  it should "avançar PC normalmente sem traps" in {
+    val program = Seq(
+      addi(1, 0, 1),          // 0x00
+      addi(2, 0, 2),          // 0x04
+      addi(3, 0, 3),          // 0x08
+      addi(4, 0, 4),          // 0x0C
+      NOP,                    // 0x10
+    )
 
-  //   test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
-  //     for (_ <- 0 until 10) {
-  //       dut.clock.step(1)
-  //     }
+    test(new Pipeline3(initialProgram = program, memoryWords = 256)) { dut =>
+      for (_ <- 0 until 10) {
+        dut.clock.step(1)
+      }
 
-  //     val pcFinal = dut.io.pc.peekInt()
-  //     assert(pcFinal >= BigInt(0x10),
-  //       s"PC final esperado >= 0x10, obtido 0x${pcFinal.toString(16)}")
-  //   }
-  // }
+      val pcFinal = dut.io.pc.peekInt()
+      assert(pcFinal >= BigInt(0x10),
+        s"PC final esperado >= 0x10, obtido 0x${pcFinal.toString(16)}")
+    }
+  }
 
-  // // ============================================================
-  // // TESTE 8: Load-use hazard gera stall
-  // // ============================================================
-  // it should "gerar stall em load-use hazard" in {
-  //   val program = Seq(
-  //     addi(1, 0, 0x100),      // 0x00: x1 = 0x100 (endereço)
-  //     addi(2, 0, 42),         // 0x04: x2 = 42
-  //     sw(2, 1, 0),            // 0x08: mem[0x100] = 42
-  //     lw(3, 1, 0),            // 0x0C: x3 = mem[0x100] (LOAD)
-  //     add(4, 3, 2),           // 0x10: x4 = x3 + x2 (load-use hazard!)
-  //     NOP,                    // 0x14
-  //   )
+  // ============================================================
+  // TESTE 8: Load-use hazard gera stall
+  // ============================================================
+  it should "gerar stall em load-use hazard" in {
+    val program = Seq(
+      addi(1, 0, 0x100),      // 0x00: x1 = 0x100 (endereço)
+      addi(2, 0, 42),         // 0x04: x2 = 42
+      sw(2, 1, 0),            // 0x08: mem[0x100] = 42
+      lw(3, 1, 0),            // 0x0C: x3 = mem[0x100] (LOAD)
+      add(4, 3, 2),           // 0x10: x4 = x3 + x2 (load-use hazard!)
+      NOP,                    // 0x14
+    )
 
-  //   test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
-  //     val x4 = new WritebackTracker
-  //     var stallObservado = false
+    test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
+      val x4 = new WritebackTracker
+      var stallObservado = false
 
-  //     for (_ <- 0 until 30) {
-  //       if (dut.io.stalled.peekBoolean()) {
-  //         stallObservado = true
-  //       }
-  //       if (dut.io.writebackEnable.peekBoolean()) {
-  //         val rd = dut.io.writebackRd.peekInt().toInt
-  //         val data = dut.io.writebackData.peekInt()
+      for (_ <- 0 until 30) {
+        if (dut.io.stalled.peekBoolean()) {
+          stallObservado = true
+        }
+        if (dut.io.writebackEnable.peekBoolean()) {
+          val rd = dut.io.writebackRd.peekInt().toInt
+          val data = dut.io.writebackData.peekInt()
 
-  //         rd match {
-  //           case 4 => x4.capturar(data)
-  //           case _ =>
-  //         }
-  //       }
-  //       dut.clock.step(1)
-  //     }
+          rd match {
+            case 4 => x4.capturar(data)
+            case _ =>
+          }
+        }
+        dut.clock.step(1)
+      }
 
-  //     assert(stallObservado, "Stall não foi observado durante load-use hazard")
-  //     assert(x4.capturado, "x4 não foi escrito")
-  //     assert(x4.valor == BigInt(84),
-  //       s"x4 esperado 84 (42+42), obtido $x4.valor")
-  //   }
-  // }
+      assert(stallObservado, "Stall não foi observado durante load-use hazard")
+      assert(x4.capturado, "x4 não foi escrito")
+      assert(x4.valor == BigInt(84),
+        s"x4 esperado 84 (42+42), obtido $x4.valor")
+    }
+  }
 }

@@ -167,7 +167,7 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
       // Verificações
       dut.io.trap_assert.expect(true.B)
       dut.io.trap_to_smode.expect(true.B)   // delegado para S-Mode
-      dut.io.trap_address.expect(0x9000.U)  // stvec
+      dut.io.redirect_address.expect(0x9000.U)  // stvec
       
       // scause = 8 (ECALL from U-Mode), bit 31 = 0
       dut.io.scause_write_data.expect(8.U)
@@ -215,8 +215,8 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step(1)
       
       // Verificações
-      dut.io.trap_assert.expect(true.B)
-      dut.io.trap_address.expect(0x2000.U)  // mepc
+      dut.io.redirect_assert.expect(true.B)
+      dut.io.redirect_address.expect(0x2000.U)  // mepc
       dut.io.direct_write_enable.expect(true.B)
       
       // mstatus: MIE ← MPIE (1), MPIE ← 1
@@ -262,8 +262,8 @@ class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step(1)
       
       // Verificações
-      dut.io.trap_assert.expect(true.B)
-      dut.io.trap_address.expect(0x3000.U)  // sepc
+      dut.io.redirect_assert.expect(true.B)
+      dut.io.redirect_address.expect(0x3000.U)  // sepc
       dut.io.direct_write_enable.expect(true.B)
       
       // sstatus: SIE ← SPIE (1), SPIE ← 1

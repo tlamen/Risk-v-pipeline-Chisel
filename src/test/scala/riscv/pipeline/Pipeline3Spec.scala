@@ -43,7 +43,7 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       addi(0, 0, 0)
     )
 
-    test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
+    test(new Pipeline3(initialProgram = program, memoryWords = 256)) { dut =>
       for (_ <- 0 until 4) {
         dut.clock.step(1)
       }
@@ -64,7 +64,7 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       addi(0, 0, 0)
     )
 
-    test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
+    test(new Pipeline3(initialProgram = program, memoryWords = 256)) { dut =>
       for (_ <- 0 until 7) {
         dut.clock.step(1)
       }
