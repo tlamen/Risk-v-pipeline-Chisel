@@ -24,21 +24,13 @@ class DecodeExecuteBundle extends Bundle {
   val csrAddress  = UInt(12.W)
   val csrWriteData = UInt(32.W)
   val csrReadData  = UInt(32.W)
+  val exc_valid   = Bool()
+  val exc_code    = UInt(31.W)
+  val exc_tval    = UInt(32.W)
+  val mret_valid  = Bool()
+  val sret_valid  = Bool()
 }
 
-/** Pipeline RV32I educacional de 3 estágios, inspirado no Wildcat.
-  *
-  * Estágios:
-  *   - IF:       busca de instrução (instrMem + pcReg)
-  *   - ID/RF:    decodificação, leitura do banco de registradores e preparação
-  *   - EX/MEM/WB: execução (ULA), acesso à memória e writeback
-  *
-  * Características:
-  *   - memórias de instrução e dados internas;
-  *   - forwarding do resultado do estágio EX para o ID;
-  *   - stall de um ciclo para load-use hazard (com registrador de WB);
-  *   - suporte a CSRs, CLINT e extensão A (LR/SC e AMOs).
-  */
 class Pipeline3(
     initialProgram: Seq[Long] = Seq.empty,
     memoryWords: Int = 1024,
@@ -54,27 +46,35 @@ class Pipeline3(
     val illegal         = Output(Bool())
     val stalled         = Output(Bool())
 
-    // Debug do CLINT
-    val debug_clint_trap_assert       = Output(Bool())
-    val debug_clint_trap_to_smode     = Output(Bool())
-    val debug_clint_delegate_to_smode = Output(Bool())
-    val debug_clint_exception_code    = Output(UInt(31.W))
-    val debug_clint_is_interrupt      = Output(Bool())
-    val debug_clint_trap_address      = Output(UInt(32.W))
+    // Debug do TrapController
+    val debug_trap_redirect      = Output(Bool())
+    val debug_trap_to_smode      = Output(Bool())
+    val debug_trap_delegate      = Output(Bool())
+    val debug_trap_code          = Output(UInt(31.W))
+    val debug_trap_is_interrupt  = Output(Bool())
+    val debug_trap_redirect_pc   = Output(UInt(32.W))
+    val debug_commit_suppress    = Output(Bool())
 
     // Debug do CSR forwarding
-    val debug_csrReadData   = Output(UInt(32.W))
-    val debug_csrForwarding = Output(Bool())
+    val debug_csrReadData    = Output(UInt(32.W))
+    val debug_csrForwarding  = Output(Bool())
     val debug_csr_address_id = Output(UInt(12.W))
     val debug_csr_address_ex = Output(UInt(12.W))
+
+    // Debug de valores dos CSRs
+    val debug_mepc    = Output(UInt(32.W))
+    val debug_mcause  = Output(UInt(32.W))
+    val debug_mtvec   = Output(UInt(32.W))
+    val debug_mstatus = Output(UInt(32.W))
+    val debug_priv    = Output(UInt(2.W))
   })
 
   import RV32I._
 
-  val nop = "h00000013".U(32.W)  // addi x0, x0, 0
+  val nop = "h00000013".U(32.W) // addi x0, x0, 0
 
   // ============================================================
-  // 1. INSTANCIAÇÃO DOS MÓDULOS
+  // 1. INSTANCIAÇÃO
   // ============================================================
   val instrMem   = Module(new InstructionMemory(
                      depthWords = memoryWords,
@@ -83,10 +83,10 @@ class Pipeline3(
   val dataMem    = Module(new DataMemory(depthWords = memoryWords))
   val regFile    = Module(new RegisterFile)
   val immGen     = Module(new ImmGen)
-  val controller = Module(new Controller)
+  val controller = Module(new ControllerP3)
   val ula        = Module(new ULA)
   val csr        = Module(new CSR)
-  val clint      = Module(new CLINT)
+  val trap       = Module(new TrapController)
 
   // ============================================================
   // 2. REGISTRADORES DE PIPELINE
@@ -96,113 +96,54 @@ class Pipeline3(
   val ifIdInstr = RegInit(nop)
   val idEx      = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
 
-  // Registrador de WB para o load durante stall
   val lwWbValid = RegInit(false.B)
   val lwWbRd    = RegInit(0.U(5.W))
   val lwWbData  = RegInit(0.U(32.W))
 
-  // Mecanismo de reserva para LR/SC
   val reservationAddr  = RegInit(0.U(32.W))
   val reservationValid = RegInit(false.B)
 
   // ============================================================
-  // 3. SINAIS DE CONTROLE DE FLUXO
-  // ============================================================
-  val stallPipeline = WireDefault(false.B)
-  val flushPipeline = WireDefault(false.B)
-
-  // ============================================================
-  // 4. CONEXÃO CLINT <-> CSR
-  // ============================================================
-  clint.io.mstatus := csr.io.mstatus_read
-  clint.io.mepc    := csr.io.mepc_read
-  clint.io.mcause  := csr.io.mcause_read
-  clint.io.mtvec   := csr.io.mtvec_read
-  clint.io.mie     := csr.io.mie_read
-  clint.io.mtval   := csr.io.mtval_read
-
-  clint.io.sstatus := csr.io.sstatus_read
-  clint.io.sepc    := csr.io.sepc_read
-  clint.io.scause  := csr.io.scause_read
-  clint.io.stvec   := csr.io.stvec_read
-  clint.io.sie     := csr.io.sie_read
-  clint.io.stval   := csr.io.stval_read
-
-  clint.io.medeleg     := csr.io.medeleg_read
-  clint.io.mideleg     := csr.io.mideleg_read
-  clint.io.current_priv := csr.io.current_priv
-
-  // ============================================================
-  // 5. INTERRUPÇÕES (a implementar)
-  // ============================================================
-  val timer = Module(new Timer)
-
-  // Endereço base do Timer (MMIO)
-  val TIMER_BASE = Parameters.TimerBaseAddress.U(32.W)
-
-  // Decodificação: endereço pertence ao Timer
-  // No Pipeline3
-  val isTimerAddress = idEx.memAddress(31, 12) === Parameters.TimerBaseAddress.U(32.W)(31, 12)
-  val memReadData = Mux(isTimerAddress, timer.io.bundle.read_data, dataMem.io.readData)
-
-                      // Conexão do Timer ao barramento MMIO
-  timer.io.bundle.address      := idEx.memAddress - TIMER_BASE
-  timer.io.bundle.write_data   := idEx.memWriteData
-  timer.io.bundle.write_enable := idEx.valid && 
-                                  !idEx.signals.illegal && 
-                                  idEx.signals.memWrite && 
-                                  isTimerAddress
-
-  val timer_interrupt = timer.io.signal_interrupt
-  val interrupt_flag = WireDefault(InterruptCode.None)
-
-  when(timer_interrupt) {
-    interrupt_flag := InterruptCode.Timer0
-  }
-
-  clint.io.pc             := pcReg
-  clint.io.instr          := ifIdInstr
-  clint.io.valid          := !stallPipeline && !flushPipeline
-  clint.io.interrupt_flag := interrupt_flag
-
-  // ============================================================
-  // 6. CONEXÃO CLINT -> CSR (escrita com prioridade)
-  // ============================================================
-  csr.io.clint_write_enable  := clint.io.direct_write_enable
-  csr.io.clint_mstatus_write := clint.io.mstatus_write_data
-  csr.io.clint_mepc_write    := clint.io.mepc_write_data
-  csr.io.clint_mcause_write  := clint.io.mcause_write_data
-  csr.io.clint_mtval_write   := clint.io.mtval_write_data
-  csr.io.clint_sepc_write    := clint.io.sepc_write_data
-  csr.io.clint_scause_write  := clint.io.scause_write_data
-  csr.io.clint_stval_write   := clint.io.stval_write_data
-  csr.io.clint_sstatus_write := clint.io.sstatus_write_data
-
-  // ============================================================
-  // 7. ESTÁGIO IF: busca de instrução
+  // 3. ESTÁGIO IF
   // ============================================================
   instrMem.io.address := pcReg
 
   // ============================================================
-  // 8. ESTÁGIO ID: decodificação e leitura do banco de registradores
+  // 4. ESTÁGIO ID: decodificação, leitura de registradores, CSR
   // ============================================================
   val idRs1 = ifIdInstr(19, 15)
   val idRs2 = ifIdInstr(24, 20)
 
-  immGen.io.instr     := ifIdInstr
+  immGen.io.instr      := ifIdInstr
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
+  controller.io.csrAddress := ifIdInstr(31, 20)
+  controller.io.rs1        := idRs1
 
   regFile.io.rs1 := idRs1
   regFile.io.rs2 := idRs2
 
-  // CSR: endereço lido pelo ID
   val csrAddressID = ifIdInstr(31, 20)
   csr.io.read_address := csrAddressID
 
   // ============================================================
-  // 9. ESTÁGIO EX: ULA, branches, CSR forwarding e writeback data
+  // 5. ESTADO DOS CSRs -> TrapController
+  // ============================================================
+  trap.io.mstatus  := csr.io.mstatus_read
+  trap.io.mepc     := csr.io.mepc_read
+  trap.io.mtvec    := csr.io.mtvec_read
+  trap.io.mtval    := csr.io.mtval_read
+  trap.io.sstatus  := csr.io.sstatus_read
+  trap.io.sepc     := csr.io.sepc_read
+  trap.io.stvec    := csr.io.stvec_read
+  trap.io.stval    := csr.io.stval_read
+  trap.io.medeleg  := csr.io.medeleg_read
+  trap.io.mideleg  := csr.io.mideleg_read
+  trap.io.priv     := csr.io.current_priv
+
+  // ============================================================
+  // 6. ESTÁGIO EX: ULA, branches, CSR forwarding
   // ============================================================
   val exOperandA = WireDefault(idEx.rs1Value)
   val exOperandB = WireDefault(idEx.rs2Value)
@@ -218,7 +159,6 @@ class Pipeline3(
   ula.io.b  := exOperandB
   ula.io.op := idEx.signals.aluOp
 
-  // Endereços de desvio
   val jalrTarget       = ula.io.result & "hFFFFFFFE".U(32.W)
   val pcRelativeTarget = (idEx.pc.asSInt + idEx.imm.asSInt).asUInt
 
@@ -237,7 +177,7 @@ class Pipeline3(
   val redirectTarget = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
 
   // ============================================================
-  // 10. HAZARD DETECTION (load-use)
+  // 7. HAZARD DETECTION (load-use)
   // ============================================================
   val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
                       (idRs2 === idEx.rd && idRs2 =/= 0.U)
@@ -247,53 +187,40 @@ class Pipeline3(
                    !idEx.signals.memWrite &&
                    idEx.signals.regWrite &&
                    idEx.signals.branchType === BranchType.NONE &&
-                   !idEx.signals.jump &&
-                   !idEx.signals.jalr
+                   !idEx.signals.jump && !idEx.signals.jalr
   val loadUseHazard = isLoadInEx && currentUsesRd
-  val hazardDetected = loadUseHazard
 
-  stallPipeline := hazardDetected
-  flushPipeline := controlRedirect
+  val stallPipeline = loadUseHazard
 
   // ============================================================
-  // 11. EXTENSÃO A: LR/SC e AMOs
+  // 8. EXTENSÃO A (LR/SC/AMO)
   // ============================================================
   val isLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
   val isSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
 
-  // LR: estabelece reserva
   when(isLR) {
     reservationAddr  := idEx.memAddress
     reservationValid := true.B
   }
 
-  // SC: verifica e escreve condicionalmente
   val scSuccess = WireDefault(false.B)
   when(isSC) {
     scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
     reservationValid := false.B
   }
+  when(isAMO) { reservationValid := false.B }
 
-  // AMO: invalida reserva
-  when(isAMO) {
-    reservationValid := false.B
-  }
-
-  // Qualquer escrita no endereço reservado invalida a reserva
   when(dataMem.io.writeEnable && (idEx.memAddress === reservationAddr)) {
     reservationValid := false.B
   }
-
-  // Interrupções invalidam a reserva
-  when(io.illegal || idEx.signals.illegal) {
-    reservationValid := false.B
-  }
+  when(io.illegal || idEx.signals.illegal) { reservationValid := false.B }
 
   // ============================================================
-  // 12. FORWARDING (registradores e CSR)
+  // 9. FORWARDING (registradores e CSR)
   // ============================================================
-  // 12a. Writeback data (prioridade: lwWb > writebackSel > ULA)
+  val memReadData = dataMem.io.readData
+
   val writebackData = WireDefault(ula.io.result)
   switch(idEx.signals.writebackSel) {
     is(WritebackSel.MEM) { writebackData := memReadData }
@@ -306,40 +233,29 @@ class Pipeline3(
   when(isAMO) { writebackData := memReadData }
   when(lwWbValid) { writebackData := lwWbData }
 
-  // 12b. Writeback enable/rd
-  val writebackEnable = (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite) || lwWbValid
-  val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
+  val writebackEnableRaw = (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite) || lwWbValid
+  val writebackRd        = Mux(lwWbValid, lwWbRd, idEx.rd)
 
-  // 12c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
   val csrForwarding = idEx.valid && !idEx.signals.illegal &&
                       idEx.signals.csrWrite &&
                       (csrAddressID === csrAddressEX)
   val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
 
-  // 12d. Forwarding de registradores (EX -> ID)
   val forwardedRs1 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
-    writebackData,
-    regFile.io.readData1
-  )
+    writebackEnableRaw && idEx.rd =/= 0.U && idEx.rd === idRs1,
+    writebackData, regFile.io.readData1)
   val forwardedRs2 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
-    writebackData,
-    regFile.io.readData2
-  )
+    writebackEnableRaw && idEx.rd =/= 0.U && idEx.rd === idRs2,
+    writebackData, regFile.io.readData2)
 
-  // Endereço de memória calculado no ID
   val decodedMemAddress = (forwardedRs1.asSInt + immGen.io.imm.asSInt).asUInt
 
   // ============================================================
-  // 13. CSR: dados a serem escritos e conexão CPU -> CSR
+  // 10. CSR: dados de escrita e noop Zicsr (C10)
   // ============================================================
-  val csrSrc = Mux(
-    controller.io.signals.csrOp(2),
-    ifIdInstr(19, 15),
-    forwardedRs1
-  )
+  val csrSrc = Mux(controller.io.signals.csrOp(2),
+                   ifIdInstr(19, 15), forwardedRs1)
 
   val csrWriteData = WireDefault(0.U(32.W))
   switch(controller.io.signals.csrOp) {
@@ -351,57 +267,122 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
+  val csrOpIsSetClear = controller.io.signals.csrOp === 2.U ||
+                        controller.io.signals.csrOp === 3.U ||
+                        controller.io.signals.csrOp === 6.U ||
+                        controller.io.signals.csrOp === 7.U
+  val csrSrcIsZero    = csrSrc === 0.U
+  csr.io.cpu_write_is_noop := csrOpIsSetClear && csrSrcIsZero
+
+  // ============================================================
+  // 11. RESOLUÇÃO DA CAUSA NO ID
+  // ============================================================
+  val idExcValid = WireDefault(false.B)
+  val idExcCode  = WireDefault(0.U(31.W))
+  val idExcTval  = WireDefault(0.U(32.W))
+  val idMret     = WireDefault(false.B)
+  val idSret     = WireDefault(false.B)
+
+  when(ifIdInstr === ECALL) {
+    idExcValid := true.B
+    idExcCode  := MuxLookup(csr.io.current_priv, TrapCause.EcallM)(Seq(
+      PrivilegeMode.U -> TrapCause.EcallU,
+      PrivilegeMode.S -> TrapCause.EcallS,
+      PrivilegeMode.M -> TrapCause.EcallM))
+    idExcTval  := 0.U
+  }.elsewhen(ifIdInstr === EBREAK) {
+    idExcValid := true.B
+    idExcCode  := TrapCause.Breakpoint
+    idExcTval  := ifIdPc
+  }.elsewhen(controller.io.signals.illegal) {
+    idExcValid := true.B
+    idExcCode  := TrapCause.IllegalInstr
+    idExcTval  := ifIdInstr
+  }.elsewhen(ifIdInstr === MRET) { idMret := true.B
+  }.elsewhen(ifIdInstr === SRET) { idSret := true.B }
+
+  // ============================================================
+  // 12. EVENTO E COMMIT -> TrapController
+  // ============================================================
+  trap.io.cause_valid := idEx.valid && idEx.exc_valid
+  trap.io.cause_code  := idEx.exc_code
+  trap.io.cause_is_int:= false.B
+  trap.io.cause_pc    := idEx.pc
+  trap.io.cause_tval  := idEx.exc_tval
+  trap.io.mret_valid  := idEx.valid && idEx.mret_valid
+  trap.io.sret_valid  := idEx.valid && idEx.sret_valid
+
+  trap.io.commit := idEx.valid && !stallPipeline
+
+  // ============================================================
+  // 13. FLUSH / REDIRECT — expressão única
+  // ============================================================
+  val trapRedirect = trap.io.redirect_valid
+
+  // Serialização de CSR/mret/sret
+  // flush por branch/jump mais velho: só faz sentido se NÃO há trap pendente
+  val branchFlush   = controlRedirect && !trapRedirect
+  // flush final (única fonte de verdade)
+  val flushPipeline = branchFlush || trapRedirect
+
+  // ============================================================
+  // 14. ESCRITA: CSR via trap, via CPU, memória, writeback
+  // ============================================================
+  csr.io.trap_we      := trap.io.csr_we
+  csr.io.trap_mstatus := trap.io.mstatus_w
+  csr.io.trap_mepc    := trap.io.mepc_w
+  csr.io.trap_mcause  := trap.io.mcause_w
+  csr.io.trap_mtval   := trap.io.mtval_w
+  csr.io.trap_sstatus := trap.io.sstatus_w
+  csr.io.trap_sepc    := trap.io.sepc_w
+  csr.io.trap_scause  := trap.io.scause_w
+  csr.io.trap_stval   := trap.io.stval_w
+  csr.io.trap_new_priv:= trap.io.new_priv
+  csr.io.trap_priv_we := trap.io.csr_we
+
   csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal &&
                               idEx.signals.csrWrite &&
-                              !clint.io.direct_write_enable
+                              !trap.io.csr_we &&              // trap tem prioridade
+                              !trap.io.commit_suppress
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data    := idEx.csrWriteData
 
-  // ============================================================
-  // 14. ACESSO À MEMÓRIA
-  // ============================================================
   dataMem.io.address     := idEx.memAddress
   dataMem.io.writeData   := idEx.memWriteData
-  dataMem.io.writeEnable := idEx.valid && 
-                          !idEx.signals.illegal && 
-                          idEx.signals.memWrite && 
-                          !isTimerAddress
-  dataMem.io.memSize     := idEx.signals.memSize
+  dataMem.io.writeEnable := idEx.valid && !idEx.signals.illegal &&
+                            idEx.signals.memWrite &&
+                            !trap.io.commit_suppress
+  dataMem.io.memSize      := idEx.signals.memSize
   dataMem.io.unsignedLoad := idEx.signals.memUnsigned
 
-  // ============================================================
-  // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
-  // ============================================================
+  val writebackEnable = writebackEnableRaw && !trap.io.commit_suppress
+
   regFile.io.rd        := idEx.rd
   regFile.io.writeData := writebackData
   regFile.io.regWrite  := writebackEnable
 
   // ============================================================
-  // 16. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
+  // 15. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
   // ============================================================
-  val pcNext = WireDefault(pcReg + 4.U)
-  when(stallPipeline) {
-    pcNext := pcReg
-  } .elsewhen(controlRedirect) {
-    pcNext := redirectTarget
-  }
+  val pcNextBase = WireDefault(pcReg + 4.U)
+  when(stallPipeline)        { pcNextBase := pcReg }
+  .elsewhen(branchFlush)     { pcNextBase := redirectTarget }
 
+  val pcNext = Mux(trapRedirect, trap.io.redirect_pc, pcNextBase)
   pcReg := pcNext
 
   when(stallPipeline) {
-    // STALL: IF/ID congelados, lw avança para o registrador de WB
     lwWbValid := true.B
     lwWbRd    := idEx.rd
     lwWbData  := dataMem.io.readData
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
-  } .elsewhen(flushPipeline || controlRedirect) {
-    // FLUSH: insere NOP no IF/ID e limpa o ID/EX
+  } .elsewhen(flushPipeline) {
+    // inclui branchFlush e trapRedirect
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
   } .otherwise {
-    // ATUALIZAÇÃO NORMAL
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := instrMem.io.readData
@@ -421,10 +402,15 @@ class Pipeline3(
     idEx.csrAddress   := ifIdInstr(31, 20)
     idEx.csrWriteData := csrWriteData
     idEx.csrReadData  := csrReadData
+    idEx.exc_valid   := idExcValid
+    idEx.exc_code    := idExcCode
+    idEx.exc_tval    := idExcTval
+    idEx.mret_valid  := idMret
+    idEx.sret_valid  := idSret
   }
 
   // ============================================================
-  // 17. SAÍDAS
+  // 16. SAÍDAS
   // ============================================================
   io.pc              := pcReg
   io.instr           := ifIdInstr
@@ -435,17 +421,22 @@ class Pipeline3(
   io.illegal         := idEx.valid && idEx.signals.illegal
   io.stalled         := stallPipeline
 
-  // Debug do CLINT
-  io.debug_clint_trap_assert       := clint.io.debug_trap_assert
-  io.debug_clint_trap_to_smode     := clint.io.debug_trap_to_smode
-  io.debug_clint_delegate_to_smode := clint.io.debug_delegate_to_smode
-  io.debug_clint_exception_code    := clint.io.debug_exception_code
-  io.debug_clint_is_interrupt      := clint.io.debug_is_interrupt
-  io.debug_clint_trap_address      := clint.io.debug_trap_address
+  io.debug_trap_redirect      := trap.io.redirect_valid
+  io.debug_trap_to_smode      := trap.io.trap_to_smode
+  io.debug_trap_delegate      := trap.io.dbg_delegate
+  io.debug_trap_code          := trap.io.dbg_code
+  io.debug_trap_is_interrupt  := trap.io.dbg_is_int
+  io.debug_trap_redirect_pc   := trap.io.redirect_pc
+  io.debug_commit_suppress    := trap.io.commit_suppress
 
-  // Debug do CSR forwarding
   io.debug_csrReadData    := csrReadData
   io.debug_csrForwarding  := csrForwarding
   io.debug_csr_address_id := csrAddressID
   io.debug_csr_address_ex := csrAddressEX
+
+  io.debug_mepc    := csr.io.mepc_read
+  io.debug_mcause  := csr.io.mcause_read
+  io.debug_mtvec   := csr.io.mtvec_read
+  io.debug_mstatus := csr.io.mstatus_read
+  io.debug_priv    := csr.io.current_priv
 }
