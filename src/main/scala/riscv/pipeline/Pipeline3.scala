@@ -29,6 +29,7 @@ class DecodeExecuteBundle extends Bundle {
   val exc_tval    = UInt(32.W)
   val mret_valid  = Bool()
   val sret_valid  = Bool()
+  val csr_is_noop = Bool()
 }
 
 class Pipeline3(
@@ -67,6 +68,23 @@ class Pipeline3(
     val debug_mtvec   = Output(UInt(32.W))
     val debug_mstatus = Output(UInt(32.W))
     val debug_priv    = Output(UInt(2.W))
+
+    val debug_cpu_write_enable   = Output(Bool())
+    val debug_cpu_write_address  = Output(UInt(12.W))
+    val debug_cpu_write_data     = Output(UInt(32.W))
+    val debug_idEx_csrWriteData  = Output(UInt(32.W))
+    val debug_idEx_valid         = Output(Bool())
+    val debug_idEx_csrWrite      = Output(Bool())
+    val debug_idEx_rd            = Output(UInt(5.W))
+    val debug_cpu_addr_ro        = Output(Bool())
+    val debug_cpu_write_is_noop  = Output(Bool())
+    val debug_trap_csr_we        = Output(Bool())
+    val debug_idEx_exc_valid = Output(Bool())
+    val debug_idEx_exc_code  = Output(UInt(31.W))
+    val debug_idEx_mret_valid = Output(Bool())
+    val debug_idEx_sret_valid = Output(Bool())
+    val debug_idEx_illegal    = Output(Bool())
+    val debug_idEx_jump       = Output(Bool())
   })
 
   import RV32I._
@@ -141,6 +159,8 @@ class Pipeline3(
   trap.io.medeleg  := csr.io.medeleg_read
   trap.io.mideleg  := csr.io.mideleg_read
   trap.io.priv     := csr.io.current_priv
+  trap.io.mcause := csr.io.mcause_read
+  trap.io.scause := csr.io.scause_read
 
   // ============================================================
   // 6. ESTÁGIO EX: ULA, branches, CSR forwarding
@@ -272,7 +292,7 @@ class Pipeline3(
                         controller.io.signals.csrOp === 6.U ||
                         controller.io.signals.csrOp === 7.U
   val csrSrcIsZero    = csrSrc === 0.U
-  csr.io.cpu_write_is_noop := csrOpIsSetClear && csrSrcIsZero
+  val csrIsNoop = csrOpIsSetClear && csrSrcIsZero
 
   // ============================================================
   // 11. RESOLUÇÃO DA CAUSA NO ID
@@ -346,6 +366,7 @@ class Pipeline3(
                               !trap.io.commit_suppress
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data    := idEx.csrWriteData
+  csr.io.cpu_write_is_noop := idEx.csr_is_noop
 
   dataMem.io.address     := idEx.memAddress
   dataMem.io.writeData   := idEx.memWriteData
@@ -407,6 +428,7 @@ class Pipeline3(
     idEx.exc_tval    := idExcTval
     idEx.mret_valid  := idMret
     idEx.sret_valid  := idSret
+    idEx.csr_is_noop := csrIsNoop
   }
 
   // ============================================================
@@ -439,4 +461,21 @@ class Pipeline3(
   io.debug_mtvec   := csr.io.mtvec_read
   io.debug_mstatus := csr.io.mstatus_read
   io.debug_priv    := csr.io.current_priv
+
+  io.debug_cpu_write_enable  := csr.io.cpu_write_enable
+  io.debug_cpu_write_address := csr.io.cpu_write_address
+  io.debug_cpu_write_data    := csr.io.cpu_write_data
+  io.debug_idEx_csrWriteData := idEx.csrWriteData
+  io.debug_idEx_valid        := idEx.valid
+  io.debug_idEx_csrWrite     := idEx.signals.csrWrite
+  io.debug_idEx_rd           := idEx.rd
+  io.debug_cpu_addr_ro := csr.io.debug_cpu_addr_ro
+  io.debug_cpu_write_is_noop := csr.io.debug_cpu_write_is_noop
+  io.debug_trap_csr_we := trap.io.csr_we
+  io.debug_idEx_exc_valid := idEx.exc_valid
+  io.debug_idEx_exc_code  := idEx.exc_code
+  io.debug_idEx_mret_valid := idEx.mret_valid
+  io.debug_idEx_sret_valid := idEx.sret_valid
+  io.debug_idEx_illegal    := idEx.signals.illegal
+  io.debug_idEx_jump       := idEx.signals.jump
 }

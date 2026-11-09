@@ -151,59 +151,71 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
   // ============================================================
   // TESTE 4: ECALL + handler com MRET retorna após o ecall
   // ============================================================
-  it should "escrever mepc via csrrw" in {
-    val program = Seq(
-      addi(5, 0, 0x10),    // x5 = 0x10
-      csrrw(0, 0x341, 5),  // mepc = 0x10
-      0x00000013L          // nop
-    )
-    test(new Pipeline3(initialProgram = program, memoryWords = 32)) { dut =>
-      for (_ <- 0 until 6) { dut.clock.step(1) }
-      dut.io.debug_mepc.expect(0x10.U)
-    }
-  }
-
   it should "executar ECALL + MRET e retomar na instrucao seguinte" in {
     val program = Seq(
       addi(5, 0, 0x20),   // 0x00
-      csrrw(0, 0x305, 5), // 0x04 mtvec = 0x20
-      addi(1, 0, 7),      // 0x08
-      ECALL,              // 0x0C
-      addi(1, 1, 1),      // 0x10
-      0x00000013L,        // 0x14
-      0x00000013L,        // 0x18
-      0x00000013L,        // 0x1C
-      csrrs(6, 0x341, 0), // 0x20 x6 = mepc
-      addi(6, 6, 4),      // 0x24
-      csrrw(0, 0x341, 6), // 0x28 mepc = 0x10
-      csrrs(7, 0x342, 0), // 0x2C x7 = mcause
-      MRET,               // 0x30
-      0x00000013L         // 0x34
+      csrrw(0, 0x305, 5), // 0x04: mtvec = 0x20
+      addi(1, 0, 7),      // 0x08: x1 = 7
+      ECALL,              // 0x0C: trap -> 0x20
+      addi(1, 1, 1),      // 0x10: retomada: x1 = 8
+      jal(0, 0x24),       // 0x14: pula handler -> 0x38
+      0x00000013L,        // 0x18: nop
+      0x00000013L,        // 0x1C: nop
+      csrrs(6, 0x341, 0), // 0x20: x6 = mepc
+      addi(6, 6, 4),      // 0x24: x6 = mepc + 4
+      csrrw(0, 0x341, 6), // 0x28: mepc = 0x10
+      csrrs(7, 0x342, 0), // 0x2C: x7 = mcause
+      MRET,               // 0x30: PC = mepc = 0x10
+      0x00000013L,        // 0x34: nop
+      jal(0, 0)           // 0x38: loop infinito (jal para si mesmo)
     )
+
     test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
-      // Roda até o mcause ser escrito (trap commitou)
+      // ----------------------------------------------------------------
+      // Passo 1: o trap do ecall deve commitar com mcause=11 e mtvec=0x20
+      // ----------------------------------------------------------------
       var ciclos = 0
       while (dut.io.debug_mcause.peek().litValue == 0 && ciclos < 100) {
         dut.clock.step(1); ciclos += 1
       }
-      dut.io.debug_mcause.expect(11.U)   // ecall de M-mode
-      dut.io.debug_mtvec.expect(0x20.U)  // escrito pelo csrrw
+      assert(ciclos < 100, "timeout: mcause não foi escrito pelo trap do ecall")
+      dut.io.debug_mcause.expect(11.U)   // ECALL from M-mode
+      dut.io.debug_mtvec.expect(0x20.U)  // escrito pelo csrrw em 0x04
 
-      // Continua até o handler avançar mepc para 0x10
+      // ----------------------------------------------------------------
+      // Passo 2: o handler deve avançar mepc para 0x10
+      // ----------------------------------------------------------------
       ciclos = 0
       while (dut.io.debug_mepc.peek().litValue != 0x10 && ciclos < 100) {
         dut.clock.step(1); ciclos += 1
       }
+      assert(ciclos < 100, "timeout: handler não avançou mepc para 0x10")
       dut.io.debug_mepc.expect(0x10.U)
 
-      // Continua até o mret redirecionar (pc volta para 0x10)
+      // ----------------------------------------------------------------
+      // Passo 3: o mret deve redirecionar o PC para 0x10 (retomada)
+      // ----------------------------------------------------------------
       ciclos = 0
       var viuRetomada = false
       while (!viuRetomada && ciclos < 100) {
         dut.clock.step(1); ciclos += 1
         if (dut.io.pc.peek().litValue == 0x10) viuRetomada = true
       }
-      assert(viuRetomada, "PC não passou por 0x10 após mret")
+      assert(viuRetomada, "PC não passou por 0x10 após o mret")
+
+      // ----------------------------------------------------------------
+      // Passo 4: o handler NÃO deve reexecutar após o jal em 0x14.
+      // ----------------------------------------------------------------
+      for (_ <- 0 until 30) { dut.clock.step(1) }
+      dut.io.debug_mepc.expect(0x10.U)   // mepc preservado
+      dut.io.debug_mcause.expect(11.U)   // mcause preservado (não zerado pelo mret)
+
+      // ----------------------------------------------------------------
+      // Passo 5 (extra): o PC deve estar no loop infinito em 0x38
+      // ----------------------------------------------------------------
+      val pcFinal = dut.io.pc.peek().litValue.toInt
+      assert(pcFinal != 0x20 && pcFinal != 0x28,
+        s"PC final 0x${pcFinal.toHexString} sugere que o handler reexecutou")
     }
   }
 

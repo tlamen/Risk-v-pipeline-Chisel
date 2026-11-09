@@ -224,4 +224,14 @@ class ControllerSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.signals.illegal.expect(false.B)
     }
   }
+
+  it should "decodificar jal corretamente" in {
+    test(new ControllerP3) { dut =>
+      pokeBase(dut, RV32I.Opcode.JAL, "b000".U, "b0000000".U)
+      dut.io.signals.illegal.expect(false.B)
+      dut.io.signals.jump.expect(true.B)
+      dut.io.signals.regWrite.expect(true.B)
+      dut.io.signals.writebackSel.expect(RV32I.WritebackSel.PC4)
+    }
+  }
 }

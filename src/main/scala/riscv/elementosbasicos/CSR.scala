@@ -50,6 +50,9 @@ class CSR extends Module {
     val trap_new_priv = Input(UInt(2.W))
     val trap_priv_we  = Input(Bool())   // true no commit de trap/mret/sret
     val current_priv  = Output(UInt(2.W))
+
+    val debug_cpu_addr_ro = Output(Bool())
+    val debug_cpu_write_is_noop = Output(Bool())
   })
 
   import RV32I._
@@ -167,4 +170,6 @@ class CSR extends Module {
 
   // Privilégio: só muda no commit do TrapController
   when(io.trap_priv_we) { priv := io.trap_new_priv }
+  io.debug_cpu_addr_ro := cpu_addr_ro
+  io.debug_cpu_write_is_noop := io.cpu_write_is_noop
 }

@@ -51,6 +51,8 @@ class TrapController extends Module {
     val medeleg  = Input(UInt(32.W))
     val mideleg  = Input(UInt(32.W))
     val priv     = Input(UInt(2.W))   // privilégio corrente
+    val mcause = Input(UInt(32.W))
+    val scause = Input(UInt(32.W))
 
     // ---------------- Evento de trap (resolvido pelo pipeline) ----------------
     val cause_valid = Input(Bool())
@@ -200,15 +202,17 @@ class TrapController extends Module {
 
     val mpie = io.mstatus(7)
     io.mstatus_w := Cat(
-      io.mstatus(31, 13),
-      0.U(2.W),                    // MPP <- U
-      io.mstatus(10, 8),
-      1.U(1.W),                    // MPIE <- 1
-      io.mstatus(6, 4),
-      mpie,                        // MIE <- MPIE
-      io.mstatus(2, 0)
+      io.mstatus(31, 13), 0.U(2.W), io.mstatus(10, 8),
+      1.U(1.W), io.mstatus(6, 4), mpie, io.mstatus(2, 0)
     )
-    io.csr_we := true.B
+    io.mepc_w   := io.mepc
+    io.mtval_w  := io.mtval     // ← preserva
+    io.sepc_w   := io.sepc
+    io.stval_w  := io.stval     // ← preserva
+    io.sstatus_w := io.sstatus
+    io.mcause_w := io.mcause
+    io.scause_w := io.scause
+    io.csr_we   := true.B
   }.elsewhen(io.commit && sret_evt) {
     // ---------- SRET ----------
     io.redirect_valid  := true.B
@@ -226,6 +230,13 @@ class TrapController extends Module {
       spie,                        // SIE <- SPIE
       io.sstatus(0, 0)
     )
+    io.sepc_w    := io.sepc
+    io.mcause_w  := io.mcause     // ← preserva (default zeraria)
+    io.mtval_w   := io.mtval
+    io.scause_w  := io.scause     // ← preserva (default zeraria)
+    io.stval_w   := io.stval
+    io.mepc_w    := io.mepc
+    io.mstatus_w := io.mstatus
     io.csr_we := true.B
   }
 
