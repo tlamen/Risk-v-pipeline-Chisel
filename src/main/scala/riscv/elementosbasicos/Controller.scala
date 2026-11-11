@@ -27,11 +27,13 @@ class ControlSignals extends Bundle {
   val csrOp = UInt(3.W) 
 }
 
-class Controller extends Module {
+class ControllerP3 extends Module {
   val io = IO(new Bundle {
     val opcode = Input(UInt(7.W))
     val funct3 = Input(UInt(3.W))
     val funct7 = Input(UInt(7.W))
+    val csrAddress = Input(UInt(12.W))
+    val rs1        = Input(UInt(5.W))
 
     val signals = Output(new ControlSignals)
   })
@@ -263,9 +265,16 @@ class Controller extends Module {
     }
 
     is(Opcode.ATOMIC) {
+      // ----------------------------------------------------------
+      // Decodificação bruta (não depende de illegal)
+      // ----------------------------------------------------------
+      val isLR_raw  = WireDefault(false.B)
+      val isSC_raw  = WireDefault(false.B)
+      val isAMO_raw = WireDefault(false.B)
+
       switch(amoFunct5) {
-        is("b00010".U) {  // funct7 = 0b00010 (0x02)
-          io.signals.isLR := true.B
+        is("b00010".U) {  // LR.W
+          isLR_raw := true.B
           io.signals.regWrite := true.B
           io.signals.writebackSel := WritebackSel.MEM
           io.signals.memSize := MemorySize.WORD
@@ -273,16 +282,13 @@ class Controller extends Module {
           io.signals.aluOp := ALUOp.ADD
           io.signals.operandASel := OperandASel.RS1
           io.signals.operandBSel := OperandBSel.IMM
-          // aq/rl não são usados em LR (mas podem ser armazenados)
           io.signals.amoAq := amoAq
           io.signals.amoRl := amoRl
         }
-        
-        // --- Store-Conditional (SC.W) ---
-        is("b00011".U) {  // funct7 = 0b00011 (0x03)
-          io.signals.isSC := true.B
+        is("b00011".U) {  // SC.W
+          isSC_raw := true.B
           io.signals.regWrite := true.B
-          io.signals.writebackSel := WritebackSel.ALU  // resultado: 0 (sucesso) ou 1 (falha)
+          io.signals.writebackSel := WritebackSel.ALU
           io.signals.memWrite := true.B
           io.signals.memSize := MemorySize.WORD
           io.signals.aluOp := ALUOp.ADD
@@ -291,22 +297,24 @@ class Controller extends Module {
           io.signals.amoAq := amoAq
           io.signals.amoRl := amoRl
         }
-        
-        // --- AMOs (Atomic Memory Operations) ---
-        is("b00001".U) { io.signals.amoOp := AMOOp.SWAP }  // 0x01
-        is("b00000".U) { io.signals.amoOp := AMOOp.ADD }   // 0x00
-        is("b01100".U) { io.signals.amoOp := AMOOp.AND }   // 0x0C
-        is("b01000".U) { io.signals.amoOp := AMOOp.OR }    // 0x08
-        is("b00100".U) { io.signals.amoOp := AMOOp.XOR }   // 0x04
-        is("b10100".U) { io.signals.amoOp := AMOOp.MAX }   // 0x14
-        is("b10000".U) { io.signals.amoOp := AMOOp.MIN }   // 0x10
-        is("b10110".U) { io.signals.amoOp := AMOOp.MAXU }  // 0x16
-        is("b10010".U) { io.signals.amoOp := AMOOp.MINU }  // 0x12
+        is("b00001".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.SWAP }
+        is("b00000".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.ADD  }
+        is("b01100".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.AND  }
+        is("b01000".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.OR   }
+        is("b00100".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.XOR  }
+        is("b10100".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.MAX  }
+        is("b10000".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.MIN  }
+        is("b10110".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.MAXU }
+        is("b10010".U) { isAMO_raw := true.B; io.signals.amoOp := AMOOp.MINU }
       }
 
-      when(io.signals.isAMO) {
+      // Cálculo de illegal usa SOMENTE os wires brutos
+      when(!(isLR_raw || isSC_raw || isAMO_raw)) { illegal := true.B }
+
+      // Configuração comum dos AMOs
+      when(isAMO_raw) {
         io.signals.regWrite := true.B
-        io.signals.writebackSel := WritebackSel.MEM  // escreve o valor antigo no rd
+        io.signals.writebackSel := WritebackSel.MEM
         io.signals.memWrite := true.B
         io.signals.memSize := MemorySize.WORD
         io.signals.memUnsigned := false.B
@@ -314,16 +322,11 @@ class Controller extends Module {
         io.signals.operandBSel := OperandBSel.RS2
         io.signals.amoAq := amoAq
         io.signals.amoRl := amoRl
-        
-        // Define o ALUOp baseado na operação AMO
         switch(io.signals.amoOp) {
-          is(AMOOp.SWAP) {
-            // SWAP não usa a ULA
-            io.signals.aluOp := ALUOp.ADD  // valor dummy
-          }
+          is(AMOOp.SWAP) { io.signals.aluOp := ALUOp.ADD }
           is(AMOOp.ADD)  { io.signals.aluOp := ALUOp.ADD }
           is(AMOOp.AND)  { io.signals.aluOp := ALUOp.AND }
-          is(AMOOp.OR)   { io.signals.aluOp := ALUOp.OR }
+          is(AMOOp.OR)   { io.signals.aluOp := ALUOp.OR  }
           is(AMOOp.XOR)  { io.signals.aluOp := ALUOp.XOR }
           is(AMOOp.MAX)  { io.signals.aluOp := ALUOp.SLT }
           is(AMOOp.MIN)  { io.signals.aluOp := ALUOp.SLT }
@@ -331,6 +334,11 @@ class Controller extends Module {
           is(AMOOp.MINU) { io.signals.aluOp := ALUOp.SLTU }
         }
       }
+
+      // Só agora publica nas saídas (sem realimentar illegal)
+      io.signals.isLR  := isLR_raw
+      io.signals.isSC  := isSC_raw
+      io.signals.isAMO := isAMO_raw
     }
 
     is(Opcode.SYSTEM) {
@@ -346,6 +354,10 @@ class Controller extends Module {
         io.signals.csrWrite := false.B
         io.signals.csrRead := false.B
         
+      } .elsewhen(io.funct3 === "b100".U) {
+        // WFI tratado como NOP
+        illegal := false.B
+        io.signals.regWrite := false.B
       } .otherwise {
         // ============================================================
         // INSTRUÇÕES CSR (CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI)
@@ -364,6 +376,31 @@ class Controller extends Module {
           is("b111".U) { io.signals.csrOp := 7.U }  // CSRRCI
         }
 
+        val csrAddrValido = MuxLookup(io.csrAddress, false.B)(Seq(
+          CSRAddress.mstatus  -> true.B, CSRAddress.misa    -> true.B,
+          CSRAddress.mie      -> true.B, CSRAddress.mtvec   -> true.B,
+          CSRAddress.mscratch -> true.B, CSRAddress.mepc    -> true.B,
+          CSRAddress.mcause   -> true.B, CSRAddress.mtval   -> true.B,
+          CSRAddress.mip      -> true.B, CSRAddress.medeleg -> true.B,
+          CSRAddress.mideleg  -> true.B,
+          CSRAddress.sstatus  -> true.B, CSRAddress.sie     -> true.B,
+          CSRAddress.stvec    -> true.B, CSRAddress.sscratch-> true.B,
+          CSRAddress.sepc     -> true.B, CSRAddress.scause  -> true.B,
+          CSRAddress.stval    -> true.B, CSRAddress.satp    -> true.B,
+          CSRAddress.mvendorid-> true.B, CSRAddress.marchid -> true.B,
+          CSRAddress.mimpid   -> true.B, CSRAddress.mhartid -> true.B
+        ))
+
+        val csrAddrReadOnly = io.csrAddress(11, 10) === "b11".U
+        val csrSrcZero      = io.rs1 === 0.U
+        val csrOpIsSetClear = io.signals.csrOp === 2.U || io.signals.csrOp === 3.U ||
+                              io.signals.csrOp === 6.U || io.signals.csrOp === 7.U
+        val csrWriteEfetiva = (io.signals.csrOp === 1.U || io.signals.csrOp === 5.U) ||
+                              (csrOpIsSetClear && !csrSrcZero)
+
+        when(!csrAddrValido) { illegal := true.B }
+        when(csrAddrReadOnly && csrWriteEfetiva) { illegal := true.B }
+
         val csrFunct3Valido = io.funct3 === "b001".U || io.funct3 === "b010".U ||
                               io.funct3 === "b011".U || io.funct3 === "b101".U ||
                               io.funct3 === "b110".U || io.funct3 === "b111".U
@@ -376,15 +413,14 @@ class Controller extends Module {
   }
 
   when(illegal) {
-    io.signals.regWrite := false.B
-    io.signals.memWrite := false.B
-    io.signals.jump := false.B
-    io.signals.branchType := BranchType.NONE
-    io.signals.isLR := false.B
-    io.signals.isSC := false.B
-    io.signals.isAMO := false.B
-    io.signals.csrWrite := false.B
-    io.signals.csrRead := false.B
-    // io.signals.csrOp := 0.U  
+    io.signals.regWrite    := false.B
+    io.signals.memWrite    := false.B
+    io.signals.jump        := false.B
+    io.signals.branchType  := BranchType.NONE
+    io.signals.isLR        := false.B
+    io.signals.isSC        := false.B
+    io.signals.isAMO       := false.B
+    io.signals.csrWrite    := false.B
+    io.signals.csrRead     := false.B
   }
 }
