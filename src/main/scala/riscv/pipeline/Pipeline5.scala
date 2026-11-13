@@ -49,6 +49,11 @@ class ExMemBundle extends Bundle {
   val csrAddress  = UInt(12.W)
   val csrWriteData = UInt(32.W)
   val csrReadData  = UInt(32.W)
+  val branchTaken = Bool()
+  val jalrTarget = UInt(32.W)
+  val pcRelativeTarget = UInt(32.W)
+  val csrIsNoop = Bool()
+  val imm = UInt(32.W)
   // Evento de trap (propagado)
   val exc_valid   = Bool()
   val exc_code    = UInt(31.W)
@@ -71,7 +76,7 @@ class MemWbBundle extends Bundle {
 
 class Pipeline5(
     initialProgram: Seq[Long] = Seq.empty,
-    memoryWords: Int = 1024
+    memoryWords: Int = 1024,
     programFile: String = ""
 ) extends Module {
   val io = IO(new Bundle {
@@ -188,7 +193,7 @@ class Pipeline5(
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs1) { idRs1Value := wbData }
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs2) { idRs2Value := wbData }
 
-  // O forwarding de EX/MEM para o ID é feito no EX; aqui
+  // O forwarding de EX/MEM para o ID é feito no EX aqui
   // só cobrimos o caso em que a instrução em ID depende de uma instrução
   // que já está em MEM ou WB.
 
@@ -218,7 +223,7 @@ class Pipeline5(
   val csrIsNoop = csrOpSetClr && (csrSrc === 0.U)
 
   // ============================================================
-  // 8. ---------- Hazard detection (load-use) ----------
+  // 8. Hazard detection (load-use)
   // ============================================================
   val idUsesRs1 = idRs1 =/= 0.U
   val idUsesRs2 = idRs2 =/= 0.U
@@ -320,7 +325,8 @@ class Pipeline5(
   trap.io.medeleg  := csr.io.medeleg_read
   trap.io.mideleg  := csr.io.mideleg_read
   trap.io.priv     := csr.io.current_priv
-
+  trap.io.mcause   := csr.io.mcause_read
+  trap.io.scause   := csr.io.scause_read
 
   trap.io.cause_valid := exMem.valid && exMem.exc_valid
   trap.io.cause_code  := exMem.exc_code
@@ -330,7 +336,8 @@ class Pipeline5(
   trap.io.mret_valid  := exMem.valid && exMem.mret_valid
   trap.io.sret_valid  := exMem.valid && exMem.sret_valid
 
-  trap.io.commit := exMem.valid && !stallPipeline
+  // Commit = estágio MEM
+  trap.io.commit := exMem.valid
 
   // Redirecionamento: trap no MEM tem prioridade sobre branch/jump
   val trapRedirect = trap.io.redirect_valid
@@ -396,7 +403,12 @@ class Pipeline5(
   }
 
   // ID/EX
-  when(stallPipeline || flushPipeline) {
+  when(stallPipeline) {
+    idEx.valid := false.B
+    idEx.exc_valid := false.B
+    idEx.mret_valid := false.B
+    idEx.sret_valid := false.B
+  } .elsewhen(flushPipeline) {
     idEx.valid := false.B
     idEx.exc_valid := false.B
     idEx.mret_valid := false.B
@@ -424,9 +436,7 @@ class Pipeline5(
   }
 
   // EX/MEM
-  when(stallPipeline) {
-    exMem.valid := false.B
-  } .otherwise {
+  when(!stallPipeline) {
     exMem.valid       := idEx.valid
     exMem.pc          := idEx.pc
     exMem.instr       := idEx.instr
@@ -439,6 +449,7 @@ class Pipeline5(
     exMem.csrWriteData := idEx.csrWriteData
     exMem.csrReadData := idEx.csrReadData
     exMem.csrIsNoop   := idEx.csrIsNoop
+    exMem.imm         := idEx.imm
     exMem.exc_valid   := idEx.exc_valid
     exMem.exc_code    := idEx.exc_code
     exMem.exc_tval    := idEx.exc_tval
@@ -456,11 +467,12 @@ class Pipeline5(
   memWb.aluResult   := exMem.aluResult
   memWb.memReadData := dataMem.io.readData
   memWb.pcPlus4     := exMem.pc + 4.U
-  memWb.imm         := exMem.signals.imm?  // não existe; usar exMem.aluResult
+  memWb.imm         := exMem.imm
   memWb.csrReadData := exMem.csrReadData
 
   // ============================================================
   // 14. Saídas
+  // ============================================================
   io.pc              := pcReg
   io.instr           := ifId.instr
   io.writebackData   := wbDataFinal
