@@ -25,9 +25,7 @@ class IdExBundle extends Bundle {
   val imm         = UInt(32.W)
   val signals     = new ControlSignalsP5
   val csrAddress  = UInt(12.W)
-  val csrWriteData = UInt(32.W)
   val csrReadData  = UInt(32.W)
-  val csrIsNoop    = Bool()
   // Evento de trap resolvido no ID e propagado ao commit
   val exc_valid   = Bool()
   val exc_code    = UInt(31.W)
@@ -94,6 +92,23 @@ class Pipeline5(
     val debug_mtvec   = Output(UInt(32.W))
     val debug_mstatus = Output(UInt(32.W))
     val debug_priv    = Output(UInt(2.W))
+
+    // Debug temporário para o teste 4
+    val debug_ifId_instr   = Output(UInt(32.W))
+    val debug_idEx_instr   = Output(UInt(32.W))
+    val debug_idEx_rd      = Output(UInt(5.W))
+    val debug_idEx_rs1     = Output(UInt(5.W))
+    val debug_idEx_rs1Val  = Output(UInt(32.W))
+    val debug_idEx_csrRD   = Output(UInt(32.W))
+    val debug_exMem_instr  = Output(UInt(32.W))
+    val debug_exMem_rd     = Output(UInt(5.W))
+    val debug_exMem_aluRes = Output(UInt(32.W))
+    val debug_exMem_csrWD  = Output(UInt(32.W))
+    val debug_exMem_csrRD  = Output(UInt(32.W))
+    val debug_exMem_valid  = Output(Bool())
+    val debug_memWb_rd     = Output(UInt(5.W))
+    val debug_memWb_data   = Output(UInt(32.W))
+    val debug_memWb_valid  = Output(Bool())
   })
 
   import RV32I._
@@ -193,9 +208,33 @@ class Pipeline5(
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs1) { idRs1Value := wbData }
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs2) { idRs2Value := wbData }
 
-  // O forwarding de EX/MEM para o ID é feito no EX aqui
-  // só cobrimos o caso em que a instrução em ID depende de uma instrução
-  // que já está em MEM ou WB.
+  // Forwarding de EX/MEM (MEM) para o ID
+  when(exMem.valid && exMem.rd =/= 0.U && exMem.rd === idRs1 &&
+      !exMem.signals.illegal && exMem.signals.regWrite &&
+      !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
+    idRs1Value := Mux(exMem.signals.writebackSel === WritebackSel.CSR,
+                      exMem.csrReadData, exMem.aluResult)
+  }
+  when(exMem.valid && exMem.rd =/= 0.U && exMem.rd === idRs2 &&
+      !exMem.signals.illegal && exMem.signals.regWrite &&
+      !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
+    idRs2Value := Mux(exMem.signals.writebackSel === WritebackSel.CSR,
+                      exMem.csrReadData, exMem.aluResult)
+  }
+
+  // Forwarding de EX (idEx) para o ID, apenas para CSR
+  when(idEx.valid && idEx.rd =/= 0.U && idEx.rd === idRs1 &&
+      !idEx.signals.illegal && idEx.signals.regWrite &&
+      idEx.signals.writebackSel === WritebackSel.CSR) {
+    idRs1Value := idEx.csrReadData
+  }
+  when(idEx.valid && idEx.rd =/= 0.U && idEx.rd === idRs2 &&
+      !idEx.signals.illegal && idEx.signals.regWrite &&
+      idEx.signals.writebackSel === WritebackSel.CSR) {
+    idRs2Value := idEx.csrReadData
+  }
+
+
 
   // ============================================================
   // 7. CSR forwarding (leitura do CSR pelo ID considera a escrita em EX/MEM)
@@ -204,23 +243,6 @@ class Pipeline5(
                       exMem.signals.csrWrite &&
                       (csrAddressID === exMem.csrAddress)
   val csrReadData = Mux(csrForwarding, exMem.csrWriteData, csr.io.read_data)
-
-  // Cálculo de csrSrc e csrWriteData (no ID, como no Pipeline3)
-  val csrSrc = Mux(controller.io.signals.csrOp(2), ifId.instr(19, 15), idRs1Value)
-
-  val csrWriteData = WireDefault(0.U(32.W))
-  switch(controller.io.signals.csrOp) {
-    is(1.U) { csrWriteData := csrSrc }
-    is(2.U) { csrWriteData := csrReadData | csrSrc }
-    is(3.U) { csrWriteData := csrReadData & ~csrSrc }
-    is(5.U) { csrWriteData := csrSrc }
-    is(6.U) { csrWriteData := csrReadData | csrSrc }
-    is(7.U) { csrWriteData := csrReadData & ~csrSrc }
-  }
-
-  val csrOpSetClr = controller.io.signals.csrOp === 2.U || controller.io.signals.csrOp === 3.U ||
-                    controller.io.signals.csrOp === 6.U || controller.io.signals.csrOp === 7.U
-  val csrIsNoop = csrOpSetClr && (csrSrc === 0.U)
 
   // ============================================================
   // 8. Hazard detection (load-use)
@@ -280,6 +302,23 @@ class Pipeline5(
     exOperandB := idEx.imm
   }
 
+  // ---------- CSR: cálculo no EX (com forwarding completo) ----------
+  val exCsrSrc = Mux(idEx.signals.csrOp(2), idEx.instr(19, 15), exRs1Value)
+
+  val exCsrWriteData = WireDefault(0.U(32.W))
+  switch(idEx.signals.csrOp) {
+    is(1.U) { exCsrWriteData := exCsrSrc }
+    is(2.U) { exCsrWriteData := idEx.csrReadData | exCsrSrc }
+    is(3.U) { exCsrWriteData := idEx.csrReadData & ~exCsrSrc }
+    is(5.U) { exCsrWriteData := exCsrSrc }
+    is(6.U) { exCsrWriteData := idEx.csrReadData | exCsrSrc }
+    is(7.U) { exCsrWriteData := idEx.csrReadData & ~exCsrSrc }
+  }
+
+  val exCsrOpSetClr = idEx.signals.csrOp === 2.U || idEx.signals.csrOp === 3.U ||
+                      idEx.signals.csrOp === 6.U || idEx.signals.csrOp === 7.U
+  val exCsrIsNoop = exCsrOpSetClr && (exCsrSrc === 0.U)
+
   ula.io.a  := exOperandA
   ula.io.b  := exOperandB
   ula.io.op := idEx.signals.aluOp
@@ -291,6 +330,13 @@ class Pipeline5(
   val pcRelativeTarget = (idEx.pc.asSInt + idEx.imm.asSInt).asUInt
 
   val branchTaken = WireDefault(false.B)
+  // No §10 (EX), após calcular branchTaken:
+  val branchRedirectEX = idEx.valid && !idEx.signals.illegal &&
+                        (idEx.signals.jump ||
+                          (idEx.signals.branchType =/= BranchType.NONE && branchTaken))
+
+  val redirectTargetEX = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
+
   switch(idEx.signals.branchType) {
     is(BranchType.BEQ)  { branchTaken := exRs1Value === exRs2Value }
     is(BranchType.BNE)  { branchTaken := exRs1Value =/= exRs2Value }
@@ -350,12 +396,10 @@ class Pipeline5(
   // 11.2 PC e flush
   val pcNextBase = WireDefault(pcReg + 4.U)
   when(stallPipeline) { pcNextBase := pcReg }
-  .elsewhen(branchRedirect && !trapRedirect) {
-    pcNextBase := Mux(exMem.signals.jalr, exMem.jalrTarget, exMem.pcRelativeTarget)
-  }
+  .elsewhen(branchRedirectEX && !trapRedirect) { pcNextBase := redirectTargetEX }
   val pcNext = Mux(trapRedirect, trap.io.redirect_pc, pcNextBase)
 
-  val flushPipeline = trapRedirect || (branchRedirect && !trapRedirect)
+  val flushPipeline = trapRedirect || branchRedirectEX
 
   // 11.3 Escrita de CSR (CPU + trap)
   csr.io.trap_we      := trap.io.csr_we
@@ -425,9 +469,7 @@ class Pipeline5(
     idEx.imm          := immGen.io.imm
     idEx.signals      := controller.io.signals
     idEx.csrAddress   := ifId.instr(31, 20)
-    idEx.csrWriteData := csrWriteData
     idEx.csrReadData  := csrReadData
-    idEx.csrIsNoop    := csrIsNoop
     idEx.exc_valid    := idExcValid
     idEx.exc_code     := idExcCode
     idEx.exc_tval     := idExcTval
@@ -446,9 +488,9 @@ class Pipeline5(
     exMem.memAddress  := exAluResult
     exMem.signals     := idEx.signals
     exMem.csrAddress  := idEx.csrAddress
-    exMem.csrWriteData := idEx.csrWriteData
+    exMem.csrWriteData := exCsrWriteData
     exMem.csrReadData := idEx.csrReadData
-    exMem.csrIsNoop   := idEx.csrIsNoop
+    exMem.csrIsNoop   := exCsrIsNoop
     exMem.imm         := idEx.imm
     exMem.exc_valid   := idEx.exc_valid
     exMem.exc_code    := idEx.exc_code
@@ -486,4 +528,21 @@ class Pipeline5(
   io.debug_mtvec   := csr.io.mtvec_read
   io.debug_mstatus := csr.io.mstatus_read
   io.debug_priv    := csr.io.current_priv
+
+  // debug temporário
+  io.debug_ifId_instr   := ifId.instr
+  io.debug_idEx_instr   := idEx.instr
+  io.debug_idEx_rd      := idEx.rd
+  io.debug_idEx_rs1     := idEx.rs1
+  io.debug_idEx_rs1Val  := idEx.rs1Value
+  io.debug_idEx_csrRD   := idEx.csrReadData
+  io.debug_exMem_instr  := exMem.instr
+  io.debug_exMem_rd     := exMem.rd
+  io.debug_exMem_aluRes := exMem.aluResult
+  io.debug_exMem_csrWD  := exMem.csrWriteData
+  io.debug_exMem_csrRD  := exMem.csrReadData
+  io.debug_exMem_valid  := exMem.valid
+  io.debug_memWb_rd     := memWb.rd
+  io.debug_memWb_data   := wbDataFinal
+  io.debug_memWb_valid  := memWb.valid
 }
