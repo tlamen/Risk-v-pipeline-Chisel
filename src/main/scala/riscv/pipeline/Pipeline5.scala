@@ -119,7 +119,7 @@ class Pipeline5(
   val memWb    = RegInit(0.U.asTypeOf(new MemWbBundle))
 
   // ============================================================
-  // 3. IF
+  // 3. IF: fetch da instrução
   // ============================================================
   instrMem.io.address := pcReg
   val ifInstr = instrMem.io.readData
@@ -188,11 +188,13 @@ class Pipeline5(
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs1) { idRs1Value := wbData }
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs2) { idRs2Value := wbData }
 
-  // O forwarding de EX/MEM para o ID é feito no EX (ver abaixo); aqui
+  // O forwarding de EX/MEM para o ID é feito no EX; aqui
   // só cobrimos o caso em que a instrução em ID depende de uma instrução
   // que já está em MEM ou WB.
 
-  // CSR forwarding (leitura do CSR pelo ID considera a escrita em EX/MEM)
+  // ============================================================
+  // 7. CSR forwarding (leitura do CSR pelo ID considera a escrita em EX/MEM)
+  // ============================================================
   val csrForwarding = exMem.valid && !exMem.signals.illegal &&
                       exMem.signals.csrWrite &&
                       (csrAddressID === exMem.csrAddress)
@@ -215,7 +217,9 @@ class Pipeline5(
                     controller.io.signals.csrOp === 6.U || controller.io.signals.csrOp === 7.U
   val csrIsNoop = csrOpSetClr && (csrSrc === 0.U)
 
-  // ---------- Hazard detection (load-use) ----------
+  // ============================================================
+  // 8. ---------- Hazard detection (load-use) ----------
+  // ============================================================
   val idUsesRs1 = idRs1 =/= 0.U
   val idUsesRs2 = idRs2 =/= 0.U
   val exIsLoad  = idEx.valid && !idEx.signals.illegal &&
@@ -232,8 +236,9 @@ class Pipeline5(
 
   val stallPipeline = loadUseHazard
 
-  // ---------- EX ----------
-  // Forwarding para EX: EX/MEM e MEM/WB → operandos do EX
+  // ============================================================
+  // 9. Forwarding para EX: EX/MEM e MEM/WB → operandos do EX
+  // ============================================================
   val exRs1Value = WireDefault(idEx.rs1Value)
   val exRs2Value = WireDefault(idEx.rs2Value)
 
@@ -257,6 +262,9 @@ class Pipeline5(
     exRs2Value := wbData
   }
 
+  // ============================================================
+  // 10. EX: execução da instrução na ULA e cálculo de desvio
+  // ============================================================
   val exOperandA = WireDefault(exRs1Value)
   val exOperandB = WireDefault(exRs2Value)
   switch(idEx.signals.operandASel) {
@@ -287,7 +295,9 @@ class Pipeline5(
     is(BranchType.BGEU) { branchTaken := exRs1Value >= exRs2Value }
   }
 
-  // ---------- MEM (ponto de commit) ----------
+  // ============================================================
+  // 11. MEM (ponto de commit)
+  // ============================================================
   val memAddress = exMem.memAddress
 
   dataMem.io.address     := memAddress
@@ -298,7 +308,7 @@ class Pipeline5(
   dataMem.io.memSize     := exMem.signals.memSize
   dataMem.io.unsignedLoad := exMem.signals.memUnsigned
 
-  // ---------- TrapController ----------
+  // 11.1 CSRs -> TrapController; resolução da causa do evento e commit 
   trap.io.mstatus  := csr.io.mstatus_read
   trap.io.mepc     := csr.io.mepc_read
   trap.io.mtvec    := csr.io.mtvec_read
@@ -311,6 +321,7 @@ class Pipeline5(
   trap.io.mideleg  := csr.io.mideleg_read
   trap.io.priv     := csr.io.current_priv
 
+
   trap.io.cause_valid := exMem.valid && exMem.exc_valid
   trap.io.cause_code  := exMem.exc_code
   trap.io.cause_is_int:= false.B
@@ -319,7 +330,6 @@ class Pipeline5(
   trap.io.mret_valid  := exMem.valid && exMem.mret_valid
   trap.io.sret_valid  := exMem.valid && exMem.sret_valid
 
-  // Commit = estágio MEM
   trap.io.commit := exMem.valid && !stallPipeline
 
   // Redirecionamento: trap no MEM tem prioridade sobre branch/jump
@@ -330,7 +340,7 @@ class Pipeline5(
                        (exMem.signals.jump ||
                         (exMem.signals.branchType =/= BranchType.NONE && exMem.branchTaken))
 
-  // PC
+  // 11.2 PC e flush
   val pcNextBase = WireDefault(pcReg + 4.U)
   when(stallPipeline) { pcNextBase := pcReg }
   .elsewhen(branchRedirect && !trapRedirect) {
@@ -340,7 +350,7 @@ class Pipeline5(
 
   val flushPipeline = trapRedirect || (branchRedirect && !trapRedirect)
 
-  // ---------- Escrita de CSR (CPU + trap) ----------
+  // 11.3 Escrita de CSR (CPU + trap)
   csr.io.trap_we      := trap.io.csr_we
   csr.io.trap_mstatus := trap.io.mstatus_w
   csr.io.trap_mepc    := trap.io.mepc_w
@@ -360,7 +370,9 @@ class Pipeline5(
   csr.io.cpu_write_data    := exMem.csrWriteData
   csr.io.cpu_write_is_noop := exMem.csrIsNoop
 
-  // ---------- Writeback ----------
+  // ============================================================
+  // 12. WB 
+  // ============================================================
   val wbMemData = memWb.memReadData
   val wbDataFinal = WireDefault(wbData)
   // (wbData já foi calculado acima a partir de memWb)
@@ -369,7 +381,9 @@ class Pipeline5(
   regFile.io.regWrite  := memWb.valid && !trap.io.commit_suppress &&
                           memWb.writebackSel =/= 0.U
 
-  // ---------- Atualização dos registradores de pipeline ----------
+  // ============================================================
+  // 13. Atualização dos registradores de pipeline 
+  // ============================================================
   pcReg := pcNext
 
   // IF/ID
@@ -445,7 +459,8 @@ class Pipeline5(
   memWb.imm         := exMem.signals.imm?  // não existe; usar exMem.aluResult
   memWb.csrReadData := exMem.csrReadData
 
-  // ---------- Saídas ----------
+  // ============================================================
+  // 14. Saídas
   io.pc              := pcReg
   io.instr           := ifId.instr
   io.writebackData   := wbDataFinal
