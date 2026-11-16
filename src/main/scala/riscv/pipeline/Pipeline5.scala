@@ -26,6 +26,7 @@ class IdExBundle extends Bundle {
   val signals     = new ControlSignalsP5
   val csrAddress  = UInt(12.W)
   val csrReadData  = UInt(32.W)
+  val csrWriteData = UInt(32.W)
   // Evento de trap resolvido no ID e propagado ao commit
   val exc_valid   = Bool()
   val exc_code    = UInt(31.W)
@@ -109,6 +110,12 @@ class Pipeline5(
     val debug_memWb_rd     = Output(UInt(5.W))
     val debug_memWb_data   = Output(UInt(32.W))
     val debug_memWb_valid  = Output(Bool())
+    val debug_idEx_imm         = Output(UInt(32.W))
+    val debug_idEx_operandBSel = Output(UInt(1.W))
+    val debug_ulaA = Output(UInt(32.W))
+    val debug_ulaB = Output(UInt(32.W))
+    val debug_exMem_writebackSel = Output(UInt(3.W))
+    val debug_regFile_x2 = Output(UInt(32.W))
   })
 
   import RV32I._
@@ -187,11 +194,26 @@ class Pipeline5(
   }.elsewhen(ifId.instr === MRET) { idMret := true.B
   }.elsewhen(ifId.instr === SRET) { idSret := true.B }
 
-  // ============================================================
+ // ============================================================
   // 6. Forwarding para o ID
-  // O valor lido do regfile é potencialmente sobrescrito pelo WB (memWb)
-  // e pelo MEM (exMem), se houver dependência.
   // ============================================================
+
+  // 6.1 — CSR forwarding (leitura do CSR pelo ID)
+  // Não depende de idRs1Value/idRs2Value, então pode vir primeiro.
+  val csrForwardingMEM = exMem.valid && !exMem.signals.illegal &&
+                        exMem.signals.csrWrite &&
+                        (csrAddressID === exMem.csrAddress)
+  val idExCsrEscreve = idEx.signals.csrOp === 1.U || idEx.signals.csrOp === 5.U ||
+                      ((idEx.signals.csrOp === 2.U || idEx.signals.csrOp === 3.U ||
+                        idEx.signals.csrOp === 6.U || idEx.signals.csrOp === 7.U) &&
+                        idEx.rs1 =/= 0.U)
+  val csrForwardingEX  = idEx.valid && !idEx.signals.illegal &&
+                        idEx.signals.csrWrite && idExCsrEscreve &&
+                        (csrAddressID === idEx.csrAddress)
+  val csrReadData = Mux(csrForwardingEX, idEx.csrWriteData,
+                  Mux(csrForwardingMEM, exMem.csrWriteData, csr.io.read_data))
+
+  // 6.2 — Forwarding de registradores (para o ID)
   val wbData = WireDefault(0.U(32.W))
   switch(memWb.writebackSel) {
     is(WritebackSel.ALU) { wbData := memWb.aluResult }
@@ -204,7 +226,7 @@ class Pipeline5(
   val idRs1Value = WireDefault(regFile.io.readData1)
   val idRs2Value = WireDefault(regFile.io.readData2)
 
-  // Prioridade: MEM > WB (mais novo vence)
+  // Prioridade: MEM > WB
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs1) { idRs1Value := wbData }
   when(memWb.valid && memWb.rd =/= 0.U && memWb.rd === idRs2) { idRs2Value := wbData }
 
@@ -234,15 +256,17 @@ class Pipeline5(
     idRs2Value := idEx.csrReadData
   }
 
-
-
-  // ============================================================
-  // 7. CSR forwarding (leitura do CSR pelo ID considera a escrita em EX/MEM)
-  // ============================================================
-  val csrForwarding = exMem.valid && !exMem.signals.illegal &&
-                      exMem.signals.csrWrite &&
-                      (csrAddressID === exMem.csrAddress)
-  val csrReadData = Mux(csrForwarding, exMem.csrWriteData, csr.io.read_data)
+  // 6.3 — csrWriteDataID (usa csrReadData e idRs1Value, ambos definidos)
+  val csrSrcID = Mux(controller.io.signals.csrOp(2), ifId.instr(19, 15), idRs1Value)
+  val csrWriteDataID = WireDefault(0.U(32.W))
+  switch(controller.io.signals.csrOp) {
+    is(1.U) { csrWriteDataID := csrSrcID }
+    is(2.U) { csrWriteDataID := csrReadData | csrSrcID }
+    is(3.U) { csrWriteDataID := csrReadData & ~csrSrcID }
+    is(5.U) { csrWriteDataID := csrSrcID }
+    is(6.U) { csrWriteDataID := csrReadData | csrSrcID }
+    is(7.U) { csrWriteDataID := csrReadData & ~csrSrcID }
+  }
 
   // ============================================================
   // 8. Hazard detection (load-use)
@@ -261,7 +285,19 @@ class Pipeline5(
      idEx.signals.regWrite) &&
     ((exRd === idRs1 && idUsesRs1) || (exRd === idRs2 && idUsesRs2))
 
-  val stallPipeline = loadUseHazard
+  val exMemCsrEscreve = exMem.signals.csrOp === 1.U || exMem.signals.csrOp === 5.U ||
+                        ((exMem.signals.csrOp === 2.U || exMem.signals.csrOp === 3.U ||
+                          exMem.signals.csrOp === 6.U || exMem.signals.csrOp === 7.U) &&
+                        exMem.instr(19, 15) =/= 0.U)
+  val csrSerializationHazard =
+    (exMem.valid && !exMem.signals.illegal && exMemCsrEscreve &&
+    (csrAddressID === exMem.csrAddress) && ifId.instr(6,0) === Opcode.SYSTEM) ||
+    (idEx.valid && !idEx.signals.illegal && idExCsrEscreve &&
+    (csrAddressID === idEx.csrAddress) && ifId.instr(6,0) === Opcode.SYSTEM)
+
+  val loadUseStall        = loadUseHazard
+  val csrSerializationStall = csrSerializationHazard && !loadUseHazard
+  val stallPipeline       = loadUseStall || csrSerializationStall
 
   // ============================================================
   // 9. Forwarding para EX: EX/MEM e MEM/WB → operandos do EX
@@ -271,14 +307,16 @@ class Pipeline5(
 
   // Prioridade: EX/MEM (mais novo) > MEM/WB
   when(exMem.valid && exMem.rd =/= 0.U &&
-       exMem.rd === idEx.rs1 && !exMem.signals.illegal &&
-       exMem.signals.regWrite && !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
-    exRs1Value := exMem.aluResult
+      exMem.rd === idEx.rs1 && !exMem.signals.illegal &&
+      exMem.signals.regWrite && !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
+    exRs1Value := Mux(exMem.signals.writebackSel === WritebackSel.MEM, dataMem.io.readData,
+                  Mux(exMem.signals.writebackSel === WritebackSel.CSR, exMem.csrReadData, exMem.aluResult))
   }
   when(exMem.valid && exMem.rd =/= 0.U &&
-       exMem.rd === idEx.rs2 && !exMem.signals.illegal &&
-       exMem.signals.regWrite && !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
-    exRs2Value := exMem.aluResult
+      exMem.rd === idEx.rs2 && !exMem.signals.illegal &&
+      exMem.signals.regWrite && !(exMem.signals.memWrite && exMem.signals.writebackSel === WritebackSel.MEM)) {
+    exRs2Value := Mux(exMem.signals.writebackSel === WritebackSel.MEM, dataMem.io.readData,
+                  Mux(exMem.signals.writebackSel === WritebackSel.CSR, exMem.csrReadData, exMem.aluResult))
   }
   when(memWb.valid && memWb.rd =/= 0.U &&
        memWb.rd === idEx.rs1 && !(exMem.valid && exMem.rd === idEx.rs1)) {
@@ -429,8 +467,7 @@ class Pipeline5(
   // (wbData já foi calculado acima a partir de memWb)
   regFile.io.rd        := memWb.rd
   regFile.io.writeData := wbDataFinal
-  regFile.io.regWrite  := memWb.valid && !trap.io.commit_suppress &&
-                          memWb.writebackSel =/= 0.U
+  regFile.io.regWrite := memWb.valid && !trap.io.commit_suppress && (memWb.rd =/= 0.U)
 
   // ============================================================
   // 13. Atualização dos registradores de pipeline 
@@ -438,7 +475,9 @@ class Pipeline5(
   pcReg := pcNext
 
   // IF/ID
-  when(stallPipeline || flushPipeline) {
+  when(stallPipeline) {
+    // STALL: mantém o ifId (não atualiza)
+  } .elsewhen(flushPipeline) {
     ifId.valid := false.B
   } .otherwise {
     ifId.valid := true.B
@@ -448,15 +487,9 @@ class Pipeline5(
 
   // ID/EX
   when(stallPipeline) {
-    idEx.valid := false.B
-    idEx.exc_valid := false.B
-    idEx.mret_valid := false.B
-    idEx.sret_valid := false.B
+    idEx := 0.U.asTypeOf(new IdExBundle)   // bolha completa
   } .elsewhen(flushPipeline) {
-    idEx.valid := false.B
-    idEx.exc_valid := false.B
-    idEx.mret_valid := false.B
-    idEx.sret_valid := false.B
+    idEx := 0.U.asTypeOf(new IdExBundle)   // bolha completa
   } .otherwise {
     idEx.valid        := ifId.valid
     idEx.pc           := ifId.pc
@@ -475,32 +508,31 @@ class Pipeline5(
     idEx.exc_tval     := idExcTval
     idEx.mret_valid   := idMret
     idEx.sret_valid   := idSret
+    idEx.csrWriteData := csrWriteDataID
   }
 
   // EX/MEM
-  when(!stallPipeline) {
-    exMem.valid       := idEx.valid
-    exMem.pc          := idEx.pc
-    exMem.instr       := idEx.instr
-    exMem.rd          := idEx.rd
-    exMem.aluResult   := exAluResult
-    exMem.rs2Value    := exRs2Value
-    exMem.memAddress  := exAluResult
-    exMem.signals     := idEx.signals
-    exMem.csrAddress  := idEx.csrAddress
-    exMem.csrWriteData := exCsrWriteData
-    exMem.csrReadData := idEx.csrReadData
-    exMem.csrIsNoop   := exCsrIsNoop
-    exMem.imm         := idEx.imm
-    exMem.exc_valid   := idEx.exc_valid
-    exMem.exc_code    := idEx.exc_code
-    exMem.exc_tval    := idEx.exc_tval
-    exMem.mret_valid  := idEx.mret_valid
-    exMem.sret_valid  := idEx.sret_valid
-    exMem.branchTaken := branchTaken
-    exMem.jalrTarget  := jalrTarget
-    exMem.pcRelativeTarget := pcRelativeTarget
-  }
+  exMem.valid       := idEx.valid
+  exMem.pc          := idEx.pc
+  exMem.instr       := idEx.instr
+  exMem.rd          := idEx.rd
+  exMem.aluResult   := exAluResult
+  exMem.rs2Value    := exRs2Value
+  exMem.memAddress  := exAluResult
+  exMem.signals     := idEx.signals
+  exMem.csrAddress  := idEx.csrAddress
+  exMem.csrWriteData := exCsrWriteData
+  exMem.csrReadData := idEx.csrReadData
+  exMem.csrIsNoop   := exCsrIsNoop
+  exMem.imm         := idEx.imm
+  exMem.exc_valid   := idEx.exc_valid
+  exMem.exc_code    := idEx.exc_code
+  exMem.exc_tval    := idEx.exc_tval
+  exMem.mret_valid  := idEx.mret_valid
+  exMem.sret_valid  := idEx.sret_valid
+  exMem.branchTaken := branchTaken
+  exMem.jalrTarget  := jalrTarget
+  exMem.pcRelativeTarget := pcRelativeTarget
 
   // MEM/WB
   memWb.valid       := exMem.valid
@@ -545,4 +577,10 @@ class Pipeline5(
   io.debug_memWb_rd     := memWb.rd
   io.debug_memWb_data   := wbDataFinal
   io.debug_memWb_valid  := memWb.valid
+  io.debug_idEx_imm         := idEx.imm
+  io.debug_idEx_operandBSel := idEx.signals.operandBSel
+  io.debug_ulaA := ula.io.a
+  io.debug_ulaB := ula.io.b
+  io.debug_exMem_writebackSel := exMem.signals.writebackSel
+  io.debug_regFile_x2 := regFile.io.debug_regs(2)
 }
