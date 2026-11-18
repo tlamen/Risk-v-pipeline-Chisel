@@ -40,7 +40,6 @@ class Pipeline3(
   val io = IO(new Bundle {
     val pc              = Output(UInt(32.W))
     val instr           = Output(UInt(32.W))
-    val aluResult       = Output(UInt(32.W))
     val writebackData   = Output(UInt(32.W))
     val writebackRd     = Output(UInt(5.W))
     val writebackEnable = Output(Bool())
@@ -436,7 +435,6 @@ class Pipeline3(
   // ============================================================
   io.pc              := pcReg
   io.instr           := ifIdInstr
-  io.aluResult       := ula.io.result
   io.writebackData   := writebackData
   io.writebackRd     := writebackRd
   io.writebackEnable := writebackEnable
